@@ -1,0 +1,27 @@
+[package]
+name = "rust-clip"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Crypto & Auth
+bip39 = "2.0"       # Per le 12/24 parole
+sha2 = "0.10"       # Per l'hashing (Ring ID)
+hmac = "0.12"       # Key derivation
+rand = "0.8"        # Generazione casuale
+hex = "0.4"
+
+# Bluetooth LE
+btleplug = "0.11"   # Cross-platform BLE
+uuid = { version = "1.0", features = ["v4"] }
+
+# Clipboard
+arboard = "3.2"
+
+# Utilities
+anyhow = "1.0"      # Error handling semplice
+clap = { version = "4.0", features = ["derive"] } # CLI arguments
+local-ip-address = "0.5" # Per trovare il proprio IP da mettere nel pacchetto BLE
