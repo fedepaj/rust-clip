@@ -25,3 +25,8 @@ arboard = "3.2"
 anyhow = "1.0"      # Error handling semplice
 clap = { version = "4.0", features = ["derive"] } # CLI arguments
 local-ip-address = "0.5" # Per trovare il proprio IP da mettere nel pacchetto BLE
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+ble-peripheral-rust = "0.2.0"

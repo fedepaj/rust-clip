@@ -1,5 +1,6 @@
 mod identity;
-mod ble; // <--- Importante: includiamo il modulo ble appena creato
+mod ble;       // Lo scanner (ricevitore)
+mod broadcast; // Il nuovo advertising (trasmettitore)
 
 use clap::{Parser, Subcommand};
 use identity::RingIdentity;
@@ -7,7 +8,7 @@ use std::io::{self, Write};
 
 #[derive(Parser)]
 #[command(name = "rust-clip")]
-#[command(about = "Clipboard Sync con Rust", long_about = None)]
+#[command(about = "Clipboard Sync: Discovery & Mesh Network", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -15,12 +16,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Crea una nuova identità
+    /// Crea una nuova identità e un nuovo Ring
     New,
-    /// Unisciti a un ring esistente
+    /// Unisciti a un Ring esistente inserendo le parole
     Join,
-    /// Avvia il demone di ascolto (Radar Bluetooth)
+    /// Avvia la modalità ASCOLTO (Scanner BLE)
     Start,
+    /// [TEST] Avvia la modalità TRASMISSIONE (Advertising BLE)
+    Broadcast,
 }
 
 #[tokio::main]
@@ -28,9 +31,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        // --- 1. CONFIGURAZIONE ---
         Commands::New => {
+            // create_new genera, salva su file e stampa a video
             let identity = RingIdentity::create_new()?;
-            println!("Ring ID Hash (Magic Bytes): {:x?}", identity.get_ble_magic_bytes());
+            println!("✅ Configurazione salvata.");
+            println!("Ring ID (Magic Bytes): {:x?}", identity.get_ble_magic_bytes());
             Ok(())
         }
         Commands::Join => {
@@ -41,23 +47,54 @@ async fn main() -> anyhow::Result<()> {
             
             let phrase = phrase.trim();
             
+            // Verifica e salva
             match RingIdentity::from_mnemonic(phrase) {
                 Ok(identity) => {
-                    println!("\n✅ Successo! Identità verificata.");
+                    identity.save()?; 
+                    println!("✅ Identità verificata e salvata su disco.");
                     println!("Ring ID Hash: {:x?}", identity.get_ble_magic_bytes());
+                    println!("Ora puoi usare 'start' (ascolto) o 'broadcast' (trasmissione)");
                 },
-                Err(e) => println!("\n❌ Errore: {}", e),
+                Err(e) => println!("\n❌ Errore nelle parole: {}", e),
             }
             Ok(())
         }
+
+        // --- 2. RUNTIME ---
         Commands::Start => {
-            println!("⚠️  Modalità DEMO: Avvio con identità temporanea per testare il Bluetooth.");
-            // Per ora generiamo un'identità al volo solo per far partire il radar
-            // Nella versione finale qui caricheremo quella salvata su file
-            let temp_identity = RingIdentity::create_new()?;
+            println!("📂 Caricamento identità...");
+            match RingIdentity::load() {
+                Ok(identity) => {
+                    println!("👤 Identità caricata: {:x?}", identity.get_ble_magic_bytes());
+                    println!("📡 Avvio SCANNER (Ricezione)...");
+                    // Chiama la logica di scanning in ble.rs
+                    ble::run_ble_stack(identity).await?;
+                },
+                Err(e) => {
+                    eprintln!("❌ Errore: {}", e);
+                    eprintln!("   (Esegui prima 'rust-clip new' o 'rust-clip join')");
+                }
+            }
+            Ok(())
+        }
+
+        // --- 3. TEST TRASMISSIONE ---
+        Commands::Broadcast => {
+            println!("📂 Caricamento identità...");
+            // Se non trova il file, ne crea una temporanea per il test veloce
+            let identity = match RingIdentity::load() {
+                Ok(id) => id,
+                Err(_) => {
+                    println!("⚠️ Nessuna identità salvata, ne creo una temporanea per il test.");
+                    RingIdentity::create_new()?
+                }
+            };
+
+            println!("👤 Identità attiva: {:x?}", identity.get_ble_magic_bytes());
+            println!("📢 Avvio BROADCASTER (Trasmissione)...");
             
-            // Passiamo il controllo al modulo BLE
-            ble::start_radar(temp_identity).await?;
+            // Chiama la logica della nuova libreria in broadcast.rs
+            broadcast::start_broadcasting(identity).await?;
             Ok(())
         }
     }
