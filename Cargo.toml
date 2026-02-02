@@ -11,6 +11,9 @@ default-run = "rust-clip"
 name = "rust-clip"
 path = "src/main.rs"
 
+[build-dependencies]
+winres = "0.1"
+
 [dependencies]
 # --- SYSTEM & ASYNC ---
 tokio = { version = "1.32", features = ["full"] }

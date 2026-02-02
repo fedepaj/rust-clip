@@ -1,11 +1,131 @@
+// use crate::core::identity::RingIdentity;
+// use crate::core::config::AppConfig; // <--- Import Config
+// use crate::events::CoreEvent;
+// use flume::Sender;
+// use anyhow::Result;
+// use mdns_sd::{ServiceDaemon, ServiceInfo};
+// use std::thread;
+// use std::time::Duration;
+// use std::sync::Arc;
+// use dashmap::DashMap;
+// use std::net::SocketAddr;
+
+// const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
+// const TCP_PORT: u16 = 5566; 
+
+// pub type PeerMap = Arc<DashMap<String, SocketAddr>>;
+
+// pub fn start_lan_discovery(
+//     identity: RingIdentity, 
+//     peers: PeerMap, 
+//     config: AppConfig, // <--- Parametro Config
+//     tx_event: Option<Sender<CoreEvent>>
+// ) -> Result<()> {
+//     println!("🌍 Avvio Discovery LAN...");
+
+//     let my_discovery_id = identity.discovery_id.clone();
+//     let mdns = ServiceDaemon::new()?;
+
+//     // --- COSTRUZIONE NOME CUSTOM ---
+//     // Puliamo il nome scelto dall'utente per renderlo compatibile con mDNS
+//     let safe_name: String = config.device_name
+//         .chars()
+//         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+//         .collect();
+    
+//     // Aggiungiamo suffisso hardware per unicità
+//     let device_suffix = RingIdentity::get_derived_device_id();
+//     let instance_name = format!("{}-{}", safe_name, device_suffix);
+//     // -------------------------------
+
+//     let ip = "0.0.0.0"; 
+    
+//     let properties = [("version", "1.0"), ("ring_id", &my_discovery_id)];
+
+//     let service_info = ServiceInfo::new(
+//         SERVICE_TYPE,
+//         &instance_name,
+//         &format!("{}.local.", instance_name),
+//         ip,
+//         TCP_PORT,
+//         &properties[..],
+//     )?.enable_addr_auto();
+
+//     mdns.register(service_info)?;
+    
+//     println!("📢 Annuncio attivo: '{}'", instance_name);
+    
+//     let receiver = mdns.browse(SERVICE_TYPE)?;
+
+//     let send_update = |peers_map: &PeerMap| {
+//         if let Some(tx) = &tx_event {
+//             let list: Vec<(String, SocketAddr)> = peers_map
+//                 .iter()
+//                 .map(|r| (r.key().clone(), *r.value()))
+//                 .collect();
+//             let _ = tx.send(CoreEvent::PeersUpdated(list));
+//         }
+//     };
+
+//     loop {
+//         while let Ok(event) = receiver.recv() {
+//             match event {
+//                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
+//                     let found_fullname = info.get_fullname();
+//                     if found_fullname.contains(&instance_name) { continue; }
+
+//                     let props = info.get_properties();
+//                     if let Some(other_prop) = props.get("ring_id") {
+//                         let raw_str = other_prop.to_string();
+//                         let mut clean_id = raw_str.trim().replace("\"", "");
+//                         if clean_id.starts_with("ring_id=") { clean_id = clean_id.replace("ring_id=", ""); }
+
+//                         if clean_id == my_discovery_id {
+//                             let mut target_addr: Option<SocketAddr> = None;
+//                             for ip in info.get_addresses() {
+//                                 if ip.is_ipv4() {
+//                                     target_addr = Some(SocketAddr::new(*ip, info.get_port()));
+//                                     break; 
+//                                 }
+//                             }
+//                             if target_addr.is_none() {
+//                                 if let Some(ip) = info.get_addresses().iter().next() {
+//                                      target_addr = Some(SocketAddr::new(*ip, info.get_port()));
+//                                 }
+//                             }
+
+//                             if let Some(addr) = target_addr {
+//                                 if !peers.contains_key(found_fullname) {
+//                                     println!("➕ Peer Aggiunto: {} -> {}", found_fullname, addr);
+//                                     peers.insert(found_fullname.to_string(), addr);
+//                                     send_update(&peers);
+//                                 }
+//                             }
+//                         }
+//                     }
+//                 }
+//                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
+//                     if peers.contains_key(&fullname) {
+//                         println!("➖ Peer Rimosso: {}", fullname);
+//                         peers.remove(&fullname);
+//                         send_update(&peers);
+//                     }
+//                 }
+//                 _ => {} 
+//             }
+//         }
+//         thread::sleep(Duration::from_millis(500));
+//     }
+// }
+
 use crate::core::identity::RingIdentity;
-use crate::core::config::AppConfig; // <--- Import Config
+use crate::core::config::AppConfig;
 use crate::events::CoreEvent;
 use flume::Sender;
 use anyhow::Result;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::Arc;
 use dashmap::DashMap;
 use std::net::SocketAddr;
@@ -13,62 +133,52 @@ use std::net::SocketAddr;
 const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
 const TCP_PORT: u16 = 5566; 
 
-pub type PeerMap = Arc<DashMap<String, SocketAddr>>;
+pub struct PeerInfo {
+    pub name: String,
+    pub addr: SocketAddr,
+    pub last_seen: Instant,
+}
+
+pub type PeerMap = Arc<DashMap<String, PeerInfo>>;
 
 pub fn start_lan_discovery(
     identity: RingIdentity, 
     peers: PeerMap, 
-    config: AppConfig, // <--- Parametro Config
+    config: AppConfig,
     tx_event: Option<Sender<CoreEvent>>
 ) -> Result<()> {
-    println!("🌍 Avvio Discovery LAN...");
-
     let my_discovery_id = identity.discovery_id.clone();
+    let device_id = RingIdentity::get_derived_device_id();
     let mdns = ServiceDaemon::new()?;
 
-    // --- COSTRUZIONE NOME CUSTOM ---
-    // Puliamo il nome scelto dall'utente per renderlo compatibile con mDNS
-    let safe_name: String = config.device_name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
+    let instance_name = format!("RustClip-{}", device_id);
     
-    // Aggiungiamo suffisso hardware per unicità
-    let device_suffix = RingIdentity::get_derived_device_id();
-    let instance_name = format!("{}-{}", safe_name, device_suffix);
-    // -------------------------------
-
-    let ip = "0.0.0.0"; 
-    
-    let properties = [("version", "1.0"), ("ring_id", &my_discovery_id)];
+    let properties = [
+        ("version", "1.0"), 
+        ("ring_id", &my_discovery_id),
+        ("device_name", &config.device_name), 
+    ];
 
     let service_info = ServiceInfo::new(
-        SERVICE_TYPE,
-        &instance_name,
-        &format!("{}.local.", instance_name),
-        ip,
-        TCP_PORT,
-        &properties[..],
+        SERVICE_TYPE, &instance_name, &format!("{}.local.", instance_name), "0.0.0.0", TCP_PORT, &properties[..],
     )?.enable_addr_auto();
 
     mdns.register(service_info)?;
-    
-    println!("📢 Annuncio attivo: '{}'", instance_name);
-    
     let receiver = mdns.browse(SERVICE_TYPE)?;
 
     let send_update = |peers_map: &PeerMap| {
         if let Some(tx) = &tx_event {
             let list: Vec<(String, SocketAddr)> = peers_map
                 .iter()
-                .map(|r| (r.key().clone(), *r.value()))
+                .map(|r| (format!("{} ({})", r.value().name, r.key()), r.value().addr))
                 .collect();
             let _ = tx.send(CoreEvent::PeersUpdated(list));
         }
     };
 
     loop {
-        while let Ok(event) = receiver.recv() {
+        // 1. Processa eventi mDNS
+        if let Ok(event) = receiver.recv_timeout(Duration::from_millis(500)) {
             match event {
                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
                     let found_fullname = info.get_fullname();
@@ -76,44 +186,42 @@ pub fn start_lan_discovery(
 
                     let props = info.get_properties();
                     if let Some(other_prop) = props.get("ring_id") {
-                        let raw_str = other_prop.to_string();
-                        let mut clean_id = raw_str.trim().replace("\"", "");
-                        if clean_id.starts_with("ring_id=") { clean_id = clean_id.replace("ring_id=", ""); }
-
+                        let mut clean_id = other_prop.to_string().replace("\"", "").replace("ring_id=", "");
+                        
                         if clean_id == my_discovery_id {
-                            let mut target_addr: Option<SocketAddr> = None;
+                            let peer_id = found_fullname.split('-').last().unwrap_or(found_fullname).split('.').next().unwrap_or("unknown");
+                            let display_name = props.get("device_name").map(|v| v.to_string().replace("device_name=", "").replace("\"", "")).unwrap_or_else(|| peer_id.to_string());
+
+                            let mut target_addr = None;
                             for ip in info.get_addresses() {
-                                if ip.is_ipv4() {
-                                    target_addr = Some(SocketAddr::new(*ip, info.get_port()));
-                                    break; 
-                                }
-                            }
-                            if target_addr.is_none() {
-                                if let Some(ip) = info.get_addresses().iter().next() {
-                                     target_addr = Some(SocketAddr::new(*ip, info.get_port()));
-                                }
+                                if ip.is_ipv4() { target_addr = Some(SocketAddr::new(*ip, info.get_port())); break; }
                             }
 
                             if let Some(addr) = target_addr {
-                                if !peers.contains_key(found_fullname) {
-                                    println!("➕ Peer Aggiunto: {} -> {}", found_fullname, addr);
-                                    peers.insert(found_fullname.to_string(), addr);
-                                    send_update(&peers);
-                                }
+                                peers.insert(peer_id.to_string(), PeerInfo {
+                                    name: display_name,
+                                    addr,
+                                    last_seen: Instant::now(),
+                                });
+                                send_update(&peers);
                             }
                         }
                     }
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
-                    if peers.contains_key(&fullname) {
-                        println!("➖ Peer Rimosso: {}", fullname);
-                        peers.remove(&fullname);
-                        send_update(&peers);
-                    }
+                    let peer_id = fullname.split('-').last().unwrap_or(&fullname).split('.').next().unwrap_or("unknown");
+                    peers.remove(peer_id);
+                    send_update(&peers);
                 }
-                _ => {} 
+                _ => {}
             }
         }
-        thread::sleep(Duration::from_millis(500));
+
+        // 2. Pulizia zombie peers (ogni ciclo)
+        let before_count = peers.len();
+        peers.retain(|_, info| info.last_seen.elapsed().as_secs() < 60);
+        if peers.len() != before_count {
+            send_update(&peers);
+        }
     }
 }

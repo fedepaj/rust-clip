@@ -22,7 +22,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 ; Icona dell'installer (usa la tua icona se è .ico, altrimenti commenta questa riga)
-; SetupIconFile=assets\icon.ico 
+SetupIconFile=assets\icon.ico 
 
 [Languages]
 Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
@@ -37,8 +37,9 @@ Name: "autostart"; Description: "Avvia RustClip all'accensione di Windows"; Grou
 Source: "target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; Aggiungi l'indice dell'icona (0 è l'icona principale embeddata nel file)
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\{#MyAppExeName}"; IconIndex: 0
 
 [Run]
 ; 1. REGOLA FIREWALL (Aggiunge eccezione TCP 5566 in entrata)
