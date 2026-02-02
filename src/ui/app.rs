@@ -3,7 +3,7 @@ use crate::events::{UiCommand, CoreEvent};
 use flume::{Sender, Receiver};
 use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
-use tray_icon::menu::MenuEvent; 
+// Rimosso MenuEvent da qui, gestito in mod.rs
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -11,7 +11,10 @@ enum Tab { Dashboard, Settings }
 pub struct RustClipApp {
     tx: Sender<UiCommand>,
     rx: Receiver<CoreEvent>,
-    tray: AppTray,
+    
+    // Manteniamo la tray nella struct solo per evitare che venga distrutta (Dropped)
+    // Se la droppiamo, l'icona sparisce.
+    _tray: AppTray, 
     
     current_tab: Tab,
     logs: Vec<String>,
@@ -20,25 +23,23 @@ pub struct RustClipApp {
     
     my_ring_id: String,
     join_phrase: String,
-    // show_mnemonic_window: bool, // (Commentato per ora se non usato)
 }
 
 impl RustClipApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, tx: Sender<UiCommand>, rx: Receiver<CoreEvent>, tray: AppTray) -> Self {
         Self {
-            tx, rx, tray,
+            tx, rx, 
+            _tray: tray, // La salviamo col "_" per dire che non la usiamo attivamente qui
             current_tab: Tab::Dashboard,
             logs: vec![],
             is_paused: false,
             peers: vec![],
             my_ring_id: "Caricamento...".into(),
             join_phrase: String::new(),
-            // show_mnemonic_window: false,
         }
     }
 
     fn update_state(&mut self) {
-        // Leggi messaggi dal Backend
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 CoreEvent::Log(entry) => self.logs.push(format!("[{}] {}", entry.timestamp, entry.message)),
@@ -52,35 +53,15 @@ impl RustClipApp {
 
 impl eframe::App for RustClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1. Aggiorna stato dal backend
         self.update_state();
 
-        // 2. CONTROLLO TRAY ICON (Fondamentale farlo qui)
-        // Leggiamo gli eventi del menu di sistema
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-             if event.id == self.tray.menu_item_show.id() {
-                 // ORDINE: Prima rendi visibile, poi porta in primo piano, poi richiedi repaint
-                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                 ctx.request_repaint(); 
-             }
-             if event.id == self.tray.menu_item_quit.id() {
-                 println!("Chiusura richiesta da Tray");
-                 // Manda comando di stop al backend (opzionale) e chiudi
-                 let _ = self.tx.send(UiCommand::Quit);
-                 std::process::exit(0);
-             }
-        }
-
-        // 3. GESTIONE CHIUSURA FINESTRA ("X" button)
+        // 1. GESTIONE CHIUSURA FINESTRA ("X" button) -> Nascondi
         if ctx.input(|i| i.viewport().close_requested()) {
-            // Invece di chiudere, nascondiamo
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        // 4. UI (Disegnamo solo se visibile per risparmiare GPU, 
-        // ma Egui gestisce questo internamente se la finestra è Hidden)
+        // 2. UI
         egui::CentralPanel::default().show(ctx, |ui| {
             // HEADER
             ui.horizontal(|ui| {
@@ -153,9 +134,7 @@ impl eframe::App for RustClipApp {
             }
         });
         
-        // 5. IL FIX CRUCIALE (HEARTBEAT)
-        // Questo dice a Egui: "Anche se non succede nulla, svegliati tra 500ms"
-        // Questo permette di controllare il canale Tray anche se la finestra è nascosta.
+        // Manteniamo un refresh lento quando la finestra è aperta
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 }
