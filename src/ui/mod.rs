@@ -43,12 +43,18 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
             configure_fonts(&ctx);
             
             // --- NATIVE WINDOW HANDLE EXTRACTION (Windows only) ---
+            // --- NATIVE WINDOW HANDLE EXTRACTION (Windows only) ---
             #[cfg(target_os = "windows")]
-            let hwnd = if let Ok(w_handle) = cc.window_handle() {
-                if let winit::raw_window_handle::RawWindowHandle::Win32(handle) = w_handle.as_raw() {
-                    handle.hwnd.get() as isize
+            let hwnd = {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                if let Ok(handle_wrapper) = cc.window_handle() {
+                    if let Ok(handle) = handle_wrapper.as_raw() {
+                        if let RawWindowHandle::Win32(win32_handle) = handle {
+                             win32_handle.hwnd.get() as isize
+                        } else { 0 }
+                    } else { 0 }
                 } else { 0 }
-            } else { 0 };
+            };
 
             let show_id = tray.menu_item_show.id().clone();
             let quit_id = tray.menu_item_quit.id().clone();

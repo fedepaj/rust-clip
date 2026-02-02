@@ -3790,6 +3790,7 @@ dependencies = [
  "notify-rust",
  "open",
  "rand",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "sha2",
