@@ -46,7 +46,6 @@ pub async fn start_clipboard_sync(identity: RingIdentity, peers: PeerMap) -> Res
 async fn run_monitor(crypto: Arc<CryptoLayer>, peers: PeerMap, recent_hashes: RecentHashes) -> Result<()> {
     println!("📋 Monitor Clipboard Attivo (Testo + Immagini)...");
     
-    // Arboard non è sempre thread-safe, meglio crearne uno locale
     let mut clipboard = Clipboard::new().map_err(|e| anyhow::anyhow!("Clip init fail: {}", e))?;
     
     let mut last_text_hash = String::new();
@@ -55,88 +54,111 @@ async fn run_monitor(crypto: Arc<CryptoLayer>, peers: PeerMap, recent_hashes: Re
     loop {
         let mut content_to_send: Option<ClipContent> = None;
         let mut content_hash = String::new();
+        let mut has_text = false;
 
         // 1. CONTROLLO TESTO
-        if let Ok(text) = clipboard.get_text() {
-            let hash = hash_data(text.as_bytes());
-            
-            // Se è cambiato rispetto all'ultimo invio E non è vuoto
-            if hash != last_text_hash && !text.is_empty() {
-                // Controllo Loop
-                let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
-                
-                if !is_from_network {
-                    println!("📝 Copia rilevata: Testo ({:.20}...) - Hash: {:.8}", text, hash);
-                    content_to_send = Some(ClipContent::Text(text));
-                    content_hash = hash.clone();
-                    // Aggiorniamo stato locale
-                    last_text_hash = hash;
-                    last_image_hash.clear(); // Resettiamo l'immagine perché ora c'è testo
-                } else {
-                    // È roba arrivata dalla rete, aggiorniamo solo il nostro stato locale
-                    last_text_hash = hash;
+        match clipboard.get_text() {
+            Ok(text) => {
+                has_text = true;
+                let hash = hash_data(text.as_bytes());
+                if hash != last_text_hash && !text.is_empty() {
+                    let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
+                    if !is_from_network {
+                        println!("📝 Copia rilevata: Testo ({:.20}...) - Hash: {:.8}", text, hash);
+                        content_to_send = Some(ClipContent::Text(text));
+                        content_hash = hash.clone();
+                        last_text_hash = hash;
+                        last_image_hash.clear();
+                    } else {
+                        last_text_hash = hash;
+                    }
                 }
+            },
+            Err(_) => { 
+                // Ignoriamo errori sul testo (spesso succede se c'è un'immagine)
+                has_text = false; 
             }
         }
 
-        // 2. CONTROLLO IMMAGINE (Solo se non abbiamo appena trovato testo nuovo)
+        // 2. CONTROLLO IMMAGINE
+        // Controlliamo l'immagine se non stiamo già inviando testo nuovo
         if content_to_send.is_none() {
-            if let Ok(img) = clipboard.get_image() {
-                // Hashare i pixel raw (width * height * 4) è veloce in RAM
-                let hash = hash_data(&img.bytes);
+            match clipboard.get_image() {
+                Ok(img) => {
+                    let hash = hash_data(&img.bytes);
 
-                if hash != last_image_hash {
-                    let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
-                    
-                    if !is_from_network {
-                        println!("🖼️  Copia rilevata: Immagine {}x{} - Hash: {:.8}", img.width, img.height, hash);
+                    if hash != last_image_hash {
+                        let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
                         
-                        // COMPRESSIONE (Heavy CPU -> Blocking Task)
-                        // Dobbiamo possedere i dati per passarli al thread
-                        let width = img.width;
-                        let height = img.height;
-                        let bytes = img.bytes.into_owned();
+                        if !is_from_network {
+                            println!("🖼️  Copia rilevata: Immagine {}x{} - Hash: {:.8}", img.width, img.height, hash);
+                            
+                            let width = img.width;
+                            let height = img.height;
+                            let bytes = img.bytes.into_owned();
 
-                        let png_result = tokio::task::spawn_blocking(move || {
-                            encode_to_png(width, height, &bytes)
-                        }).await?;
+                            let png_result = tokio::task::spawn_blocking(move || {
+                                encode_to_png(width, height, &bytes)
+                            }).await?;
 
-                        if let Ok(png_bytes) = png_result {
-                            println!("   Compressione: {} bytes RAW -> {} bytes PNG", width*height*4, png_bytes.len());
-                            content_to_send = Some(ClipContent::Image(png_bytes));
-                            content_hash = hash.clone();
+                            match png_result {
+                                Ok(png_bytes) => {
+                                    println!("   Compressione OK: {} bytes. Invio...", png_bytes.len());
+                                    content_to_send = Some(ClipContent::Image(png_bytes));
+                                    content_hash = hash.clone();
+                                    last_image_hash = hash;
+                                    last_text_hash.clear();
+                                },
+                                Err(e) => eprintln!("❌ Errore compressione PNG: {}", e),
+                            }
+                        } else {
                             last_image_hash = hash;
-                            last_text_hash.clear();
                         }
-                    } else {
-                        last_image_hash = hash;
+                    }
+                },
+                Err(e) => {
+                    // --- DEBUG WINDOWS ---
+                    // Su Windows questo errore è comune se la clipboard è "Locked".
+                    // Stampiamo l'errore SOLO se non è il classico "ContentNotAvailable" (cioè clipboard vuota)
+                    let msg = format!("{}", e);
+                    if !msg.contains("The clipboard is empty") && !msg.contains("specified format is not available") {
+                         // Se c'è del testo, è normale che get_image fallisca, non stampiamo nulla
+                         if !has_text {
+                             eprintln!("⚠️  Debug Windows - Errore lettura Immagine: {}", msg);
+                         }
                     }
                 }
             }
         }
 
-        // 3. INVIO (Se abbiamo trovato qualcosa)
+        // 3. INVIO
         if let Some(content) = content_to_send {
-            // Aggiungiamo ai recenti per evitare loop se torna indietro
             {
                 let mut set = recent_hashes.lock().unwrap();
                 set.insert(content_hash);
             }
 
-            // Serializza e Cifra
-            if let Ok(raw_bytes) = bincode::serialize(&content) {
-                if let Ok(encrypted_bytes) = crypto.encrypt(&raw_bytes) {
-                    // Broadcast ai peer
-                    for item in peers.iter() {
-                        let addr = *item.value();
-                        let data = encrypted_bytes.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = send_data(addr, data).await {
-                                // Silent fail, riproverà dopo
+            match bincode::serialize(&content) {
+                Ok(raw_bytes) => {
+                     match crypto.encrypt(&raw_bytes) {
+                        Ok(encrypted_bytes) => {
+                            for item in peers.iter() {
+                                let addr = *item.value();
+                                let data = encrypted_bytes.clone();
+                                let peer_name = item.key().clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = send_data(addr, data).await {
+                                        eprintln!("⚠️  Invio fallito a {}: {}", peer_name, e);
+                                    } else {
+                                        println!("🚀 Inviato a {}", peer_name);
+                                    }
+                                });
                             }
-                        });
-                    }
-                }
+                        },
+                        Err(e) => eprintln!("❌ Errore Cifratura: {}", e),
+                     }
+                },
+                Err(e) => eprintln!("❌ Errore Serializzazione: {}", e),
             }
         }
 
