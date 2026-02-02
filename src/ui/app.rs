@@ -3,6 +3,7 @@ use crate::events::{UiCommand, CoreEvent};
 use flume::{Sender, Receiver};
 use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -10,10 +11,11 @@ enum Tab { Dashboard, Settings }
 pub struct RustClipApp {
     tx: Sender<UiCommand>,
     rx: Receiver<CoreEvent>,
+    _tray: AppTray,
     
-    // Manteniamo la tray viva
-    _tray: AppTray, 
-    
+    // Flag ricevuto da mod.rs
+    show_request: Arc<AtomicBool>,
+
     current_tab: Tab,
     logs: Vec<String>,
     is_paused: bool,
@@ -24,10 +26,18 @@ pub struct RustClipApp {
 }
 
 impl RustClipApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, tx: Sender<UiCommand>, rx: Receiver<CoreEvent>, tray: AppTray) -> Self {
+    // Aggiunto parametro show_request
+    pub fn new(
+        _cc: &eframe::CreationContext<'_>, 
+        tx: Sender<UiCommand>, 
+        rx: Receiver<CoreEvent>, 
+        tray: AppTray,
+        show_request: Arc<AtomicBool>
+    ) -> Self {
         Self {
             tx, rx, 
             _tray: tray,
+            show_request, // Salviamo il flag
             current_tab: Tab::Dashboard,
             logs: vec![],
             is_paused: false,
@@ -53,14 +63,26 @@ impl eframe::App for RustClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_state();
 
-        // GESTIONE CHIUSURA -> NASCONDI
+        // --- GESTIONE APERTURA (SVEGLIA) ---
+        // Se il thread della tray ha alzato il flag:
+        if self.show_request.load(Ordering::Relaxed) {
+            // Resetta il flag
+            self.show_request.store(false, Ordering::Relaxed);
+            
+            // Esegui i comandi DAL MAIN THREAD (Windows approved ✅)
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+
+        // --- GESTIONE CHIUSURA ---
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        // UI
         egui::CentralPanel::default().show(ctx, |ui| {
+            // ... (Tutto il codice UI dentro show() rimane identico) ...
             // HEADER
             ui.horizontal(|ui| {
                 ui.heading("RustClip 🦀");
@@ -132,7 +154,6 @@ impl eframe::App for RustClipApp {
             }
         });
         
-        // Manteniamo un refresh minimo (utile per vedere i log arrivare quando la finestra è aperta)
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 }

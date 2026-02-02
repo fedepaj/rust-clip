@@ -5,14 +5,16 @@ use eframe::egui;
 use flume::{Sender, Receiver};
 use crate::events::{UiCommand, CoreEvent};
 use tray_icon::menu::MenuEvent;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result<()> {
-    // 1. Inizializza Tray
     let tray = tray::AppTray::new()?;
-    
-    // Salviamo gli ID
     let show_id = tray.menu_item_show.id().clone();
     let quit_id = tray.menu_item_quit.id().clone();
+
+    // FLAG CONDIVISO: "La finestra deve aprirsi?"
+    let show_request = Arc::new(AtomicBool::new(false));
+    let show_request_thread = show_request.clone();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -27,35 +29,27 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
         "RustClip",
         options,
         Box::new(move |cc| {
-            // Cloniamo il contesto per il thread
             let ctx = cc.egui_ctx.clone();
             let tx_clone = tx.clone();
             
-            // --- TRAY LISTENER THREAD ---
+            // --- TRAY THREAD (SVEGLIA) ---
             std::thread::spawn(move || {
                 while let Ok(event) = MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        // SEQUENZA DI RISVEGLIO ROBUSTA PER WINDOWS
-                        // 1. Rendiamo visibile
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        // 2. Assicuriamoci che non sia minimizzata (importante su Win)
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        // 3. Portiamo in primo piano
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        // 4. Forziamo il repaint
+                        // 1. Alza il flag
+                        show_request_thread.store(true, Ordering::Relaxed);
+                        // 2. SVEGLIA IL MAIN THREAD
                         ctx.request_repaint();
                     } 
                     else if event.id == quit_id {
-                        // Manda comando al backend per chiudere clean
                         let _ = tx_clone.send(UiCommand::Quit);
-                        // Forza chiusura processo brutale (sicura su Windows per GUI apps)
                         std::process::exit(0);
                     }
                 }
             });
-            // ----------------------------
 
-            Ok(Box::new(app::RustClipApp::new(cc, tx, rx, tray)))
+            // Passiamo il flag all'app
+            Ok(Box::new(app::RustClipApp::new(cc, tx, rx, tray, show_request)))
         }),
     ).map_err(|e| anyhow::anyhow!("Errore GUI: {}", e))
 }
