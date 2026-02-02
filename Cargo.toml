@@ -31,3 +31,5 @@ arboard = "3.3"
 
 # Networking
 mdns-sd = "0.10"
+
+image = "0.24"
