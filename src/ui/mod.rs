@@ -5,16 +5,12 @@ use eframe::egui;
 use flume::{Sender, Receiver};
 use crate::events::{UiCommand, CoreEvent};
 use tray_icon::menu::MenuEvent;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result<()> {
     let tray = tray::AppTray::new()?;
+    
     let show_id = tray.menu_item_show.id().clone();
     let quit_id = tray.menu_item_quit.id().clone();
-
-    // FLAG CONDIVISO: "La finestra deve aprirsi?"
-    let show_request = Arc::new(AtomicBool::new(false));
-    let show_request_thread = show_request.clone();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -32,13 +28,15 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
             let ctx = cc.egui_ctx.clone();
             let tx_clone = tx.clone();
             
-            // --- TRAY THREAD (SVEGLIA) ---
+            // --- TRAY LISTENER THREAD ---
             std::thread::spawn(move || {
                 while let Ok(event) = MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        // 1. Alza il flag
-                        show_request_thread.store(true, Ordering::Relaxed);
-                        // 2. SVEGLIA IL MAIN THREAD
+                        // FIX WINDOWS: Inviamo i comandi DIRETTAMENTE da qui
+                        // Non aspettiamo il loop update()
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         ctx.request_repaint();
                     } 
                     else if event.id == quit_id {
@@ -47,9 +45,10 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                     }
                 }
             });
+            // ----------------------------
 
-            // Passiamo il flag all'app
-            Ok(Box::new(app::RustClipApp::new(cc, tx, rx, tray, show_request)))
+            // Non serve più passare flag atomici complessi
+            Ok(Box::new(app::RustClipApp::new(cc, tx, rx, tray)))
         }),
     ).map_err(|e| anyhow::anyhow!("Errore GUI: {}", e))
 }

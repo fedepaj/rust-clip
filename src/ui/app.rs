@@ -3,7 +3,6 @@ use crate::events::{UiCommand, CoreEvent};
 use flume::{Sender, Receiver};
 use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -13,9 +12,6 @@ pub struct RustClipApp {
     rx: Receiver<CoreEvent>,
     _tray: AppTray,
     
-    // Flag ricevuto da mod.rs
-    show_request: Arc<AtomicBool>,
-
     current_tab: Tab,
     logs: Vec<String>,
     is_paused: bool,
@@ -26,18 +22,16 @@ pub struct RustClipApp {
 }
 
 impl RustClipApp {
-    // Aggiunto parametro show_request
+    // Rimosso show_request dai parametri
     pub fn new(
         _cc: &eframe::CreationContext<'_>, 
         tx: Sender<UiCommand>, 
         rx: Receiver<CoreEvent>, 
-        tray: AppTray,
-        show_request: Arc<AtomicBool>
+        tray: AppTray
     ) -> Self {
         Self {
             tx, rx, 
             _tray: tray,
-            show_request, // Salviamo il flag
             current_tab: Tab::Dashboard,
             logs: vec![],
             is_paused: false,
@@ -63,26 +57,15 @@ impl eframe::App for RustClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_state();
 
-        // --- GESTIONE APERTURA (SVEGLIA) ---
-        // Se il thread della tray ha alzato il flag:
-        if self.show_request.load(Ordering::Relaxed) {
-            // Resetta il flag
-            self.show_request.store(false, Ordering::Relaxed);
-            
-            // Esegui i comandi DAL MAIN THREAD (Windows approved ✅)
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
-
-        // --- GESTIONE CHIUSURA ---
+        // 1. GESTIONE CHIUSURA -> NASCONDI
         if ctx.input(|i| i.viewport().close_requested()) {
+            // Su Windows è cruciale chiamare PRIMA CancelClose e POI Visible(false)
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
+        // 2. UI
         egui::CentralPanel::default().show(ctx, |ui| {
-            // ... (Tutto il codice UI dentro show() rimane identico) ...
             // HEADER
             ui.horizontal(|ui| {
                 ui.heading("RustClip 🦀");
