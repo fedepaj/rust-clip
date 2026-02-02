@@ -82,9 +82,12 @@ pub fn start_lan_discovery(
 
                         if clean_id == my_discovery_id {
                             // Extract metadata
-                            let device_name = props.get("device_name")
+                            // FIX: Strip "device_name=" if present
+                            let raw_name = props.get("device_name")
                                 .map(|s| s.to_string().replace("\"", ""))
                                 .unwrap_or_else(|| "Unknown".to_string());
+                            
+                            let device_name = raw_name.replace("device_name=", ""); // FIX 1
                             
                             let peer_device_id = props.get("device_id")
                                 .map(|s| s.to_string().replace("\"", ""))
@@ -127,7 +130,11 @@ pub fn start_lan_discovery(
                                 } else {
                                     peers.insert(peer_device_id.clone(), peer_info);
                                     changed = true;
-                                    println!("➕ Peer Aggiunto: {} ({}) -> {}", device_name, peer_device_id, addr);
+                                    let msg = format!("➕ Peer Aggiunto: {} ({}) -> {}", device_name, peer_device_id, addr);
+                                    println!("{}", msg);
+                                    if let Some(tx) = &tx_event {
+                                        let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&msg)));
+                                    }
                                 }
                                 
                                 if changed {

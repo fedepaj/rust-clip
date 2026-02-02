@@ -50,7 +50,7 @@ pub async fn start_clipboard_sync(
         }
     });
 
-    run_monitor(crypto, peers, recent_hashes, busy_writing, global_pause).await
+    run_monitor(crypto, peers, recent_hashes, busy_writing, global_pause, tx_event).await
 }
 
 async fn run_monitor(
@@ -58,9 +58,13 @@ async fn run_monitor(
     peers: PeerMap, 
     recent_hashes: RecentHashes,
     busy_writing: Arc<AtomicBool>,
-    global_pause: Arc<AtomicBool>
+    global_pause: Arc<AtomicBool>,
+    tx_event: Option<Sender<CoreEvent>> // ADDED
 ) -> Result<()> {
     println!("📋 Monitor Clipboard Attivo...");
+    if let Some(ref tx) = tx_event {
+        let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new("📋 Monitor Clipboard Attivo...")));
+    }
     
     let mut last_text_hash = String::new();
     let mut last_image_hash = String::new();
@@ -97,7 +101,7 @@ async fn run_monitor(
                             println!("📝 Testo rilevato -> Invio...");
                             last_text_hash = hash.clone();
                             last_image_hash.clear();
-                            if let Some(c) = content_wrapper { broadcast(c, hash, &crypto, &peers, &recent_hashes).await; }
+                            if let Some(c) = content_wrapper { broadcast(c, hash, &crypto, &peers, &recent_hashes, tx_event.clone()).await; }
                         } else { last_text_hash = hash; }
                     }
                 },
@@ -113,7 +117,7 @@ async fn run_monitor(
                                     println!("   PNG: {} bytes", png_bytes.len());
                                     last_image_hash = hash.clone();
                                     last_text_hash.clear();
-                                    broadcast(ClipContent::Image(png_bytes), hash, &crypto, &peers, &recent_hashes).await;
+                                    broadcast(ClipContent::Image(png_bytes), hash, &crypto, &peers, &recent_hashes, tx_event.clone()).await;
                                 }
                             }
                         } else { last_image_hash = hash; }
@@ -221,7 +225,8 @@ async fn broadcast(
     hash: String, 
     crypto: &CryptoLayer, 
     peers: &PeerMap, 
-    hashes: &RecentHashes
+    hashes: &RecentHashes,
+    tx_event: Option<Sender<CoreEvent>>
 ) {
     hashes.lock().unwrap().insert(hash);
     let raw = match bincode::serialize(&content) { Ok(r) => r, Err(_) => return };
@@ -237,14 +242,24 @@ async fn broadcast(
         
         let peers_ref = peers.clone(); 
         
+        let tx_clone = tx_event.clone(); 
+        
         tokio::spawn(async move {
             // Se fallisce l'invio, rimuoviamo il peer
             if let Err(_) = send_data(addr, data).await { 
-                println!("⚠️ Connessione fallita verso {} ({}). Rimozione peer.", peer_info.name, device_id);
+                let msg = format!("⚠️ Connessione fallita verso {} ({}). Rimozione peer.", peer_info.name, device_id);
+                println!("{}", msg);
+                if let Some(tx) = &tx_clone {
+                    let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&msg)));
+                }
                 // Rimozione immediata per evitare timeout successivi
                 peers_ref.remove(&device_id);
             } else { 
-                println!("🚀 Sent to {}", peer_info.name); 
+                let msg = format!("🚀 Sent to {}", peer_info.name);
+                println!("{}", msg); 
+                if let Some(tx) = &tx_clone {
+                    let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&msg)));
+                }
             }
         });
     }

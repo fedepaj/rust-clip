@@ -17,6 +17,19 @@ pub struct LogEntry {
     pub message: String,
 }
 
+impl LogEntry {
+    pub fn new(msg: &str) -> Self {
+        let now = chrono::Local::now();
+        Self {
+            timestamp: now.format("%H:%M:%S").to_string(),
+            level: LogLevel::Info,
+            message: msg.to_string(),
+        }
+    }
+}
+
+
+
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     pub name: String,

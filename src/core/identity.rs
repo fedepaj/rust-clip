@@ -141,6 +141,7 @@ impl RingIdentity {
 
     pub fn load() -> Result<Self> {
         let path = Self::get_identity_path()?;
+        println!("🔑 Identity Path: {:?}", path);
 
         if !path.exists() {
             return Err(anyhow!("Nessuna identità trovata in {:?}", path));

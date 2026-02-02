@@ -42,6 +42,7 @@ impl AppConfig {
 
     pub fn load() -> Self {
         if let Ok(path) = Self::get_path() {
+            println!("📂 Config Path: {:?}", path);
             if let Ok(content) = fs::read_to_string(path) {
                 if let Ok(cfg) = serde_json::from_str(&content) {
                     return cfg;
