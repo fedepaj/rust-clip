@@ -48,10 +48,9 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
             let hwnd = {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 if let Ok(handle_wrapper) = cc.window_handle() {
-                    if let Ok(handle) = handle_wrapper.as_raw() {
-                        if let RawWindowHandle::Win32(win32_handle) = handle {
-                             win32_handle.hwnd.get() as isize
-                        } else { 0 }
+                    let handle = handle_wrapper.as_raw();
+                    if let RawWindowHandle::Win32(win32_handle) = handle {
+                            win32_handle.hwnd.get() as isize
                     } else { 0 }
                 } else { 0 }
             };
@@ -73,7 +72,7 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                             use windows::Win32::Foundation::HWND;
                             use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SetForegroundWindow, SW_RESTORE};
                             if hwnd != 0 {
-                                let h = HWND(hwnd as *mut _);
+                                let h = HWND(hwnd);
                                 ShowWindow(h, SW_RESTORE);
                                 SetForegroundWindow(h);
                             }
