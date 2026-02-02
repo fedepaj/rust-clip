@@ -3,22 +3,31 @@ use anyhow::Result;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::thread;
 use std::time::Duration;
+use rand::Rng; // Ci serve per generare un ID casuale per il dispositivo
 
 const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
 
 pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
     println!("🌍 Avvio Discovery LAN (mDNS)...");
 
+    // Questo è il segreto condiviso (Ring ID)
     let my_ring_id = identity.get_ring_id_hex();
+    
+    // Generiamo un ID casuale per QUESTO dispositivo (Device ID)
+    // Così Device A e Device B avranno nomi diversi anche se sono nello stesso Ring
+    let mut rng = rand::thread_rng();
+    let device_id: u16 = rng.gen(); 
     
     // 1. Inizializza il demone
     let mdns = ServiceDaemon::new()?;
 
     // 2. ADVERTISING
-    let instance_name = format!("RustClip-{}", my_ring_id);
+    // Il nome ora è univoco per ogni computer: es. "RustClip-a1b2"
+    let instance_name = format!("RustClip-{:04x}", device_id);
     let ip = "0.0.0.0"; 
     let port = 5000;    
 
+    // Mettiamo il Ring ID (la "password") nelle proprietà
     let properties = [("version", "1.0"), ("ring_id", &my_ring_id)];
 
     let service_info = ServiceInfo::new(
@@ -31,7 +40,9 @@ pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
     )?.enable_addr_auto();
 
     mdns.register(service_info)?;
-    println!("📢 Annuncio attivo: {} (Ring ID: {})", instance_name, my_ring_id);
+    
+    println!("📢 Io sono: '{}'", instance_name);
+    println!("🔐 Il mio Ring ID: '{}' (nascosto nei metadati)", my_ring_id);
     println!("👀 In ascolto sulla rete WiFi...\n");
 
     // 3. BROWSING
@@ -43,17 +54,18 @@ pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
                     let found_fullname = info.get_fullname();
                     
+                    // Ora questo controllo ha senso: ignoriamo solo se il nome è IDENTICO al nostro.
+                    // Poiché abbiamo nomi casuali, Device A non scarterà Device B.
                     if found_fullname.contains(&instance_name) {
-                        continue; // Ignora noi stessi
+                        continue; 
                     }
 
                     let props = info.get_properties();
                     
                     if let Some(other_ring_id_prop) = props.get("ring_id") {
-                        
-                        // --- FIX: Convertiamo la proprietà in Stringa ---
                         let other_id_str = other_ring_id_prop.to_string();
 
+                        // Qui avviene la magia: nomi diversi, ma STESSO Ring ID
                         if other_id_str == my_ring_id {
                             let addrs = info.get_addresses();
                             let ip_str = if !addrs.is_empty() {
@@ -66,12 +78,12 @@ pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
                             };
 
                             println!("🚀 🔗 TROVATO DISPOSITIVO DEL RING! 🔗 🚀");
-                            println!("   Nome: {}", found_fullname);
-                            println!("   IP:   {}", ip_str);
-                            println!("   Port: {}", info.get_port());
+                            println!("   Nome Device: {}", found_fullname);
+                            println!("   IP Address:  {}", ip_str);
+                            println!("   Port:        {}", info.get_port());
                             println!("-------------------------------------------");
                         } else {
-                            println!("⚠️  Trovato RustClip estraneo (Ring: {})", other_id_str);
+                            println!("⚠️  Trovato RustClip estraneo (Ring ID diverso)");
                         }
                     }
                 }
