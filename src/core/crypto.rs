@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use chacha20poly1305::{
     XChaCha20Poly1305, Key, XNonce, 
-    aead::{Aead, KeyInit, Payload}
+    aead::{Aead, KeyInit}
 };
 use rand::{RngCore, thread_rng};
 use serde::{Serialize, Deserialize};

@@ -5,7 +5,7 @@ mod events;
 use clap::{Parser, Subcommand};
 use core::identity::RingIdentity;
 use core::{discovery, clipboard};
-use std::io::{self, Write};
+use std::io;
 use std::sync::Arc;
 use dashmap::DashMap;
 use flume::{Sender, Receiver};
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
 
 // Wrapper per avviare il runtime Tokio
 fn run_async_backend(
-    rx_cmd: Option<Receiver<UiCommand>>, 
+    _rx_cmd: Option<Receiver<UiCommand>>, 
     tx_event: Option<Sender<CoreEvent>>
 ) -> anyhow::Result<()> {
     

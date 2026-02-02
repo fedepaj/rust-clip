@@ -54,7 +54,7 @@ async fn run_monitor(crypto: Arc<CryptoLayer>, peers: PeerMap, recent_hashes: Re
     loop {
         let mut content_to_send: Option<ClipContent> = None;
         let mut content_hash = String::new();
-        let mut has_text = false;
+        let mut _has_text = false;
 
         // 1. CONTROLLO TESTO
         match clipboard.get_text() {

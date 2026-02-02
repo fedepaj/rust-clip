@@ -49,4 +49,4 @@ tray-icon = "0.19" # Aggiorniamo anche questo per compatibilità
 # tao = "0.28"      # Rimuoviamo tao esplicito per evitare conflitti con winit di eframe
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.52", features = ["Win32_System_Console"] }
+windows = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation"] }
