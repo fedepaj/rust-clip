@@ -17,18 +17,17 @@ pub struct RustClipApp {
     is_paused: bool,
     peers: Vec<(String, SocketAddr)>,
     
+    // Dati Identità
     my_ring_id: String,
+    my_mnemonic: String, // <--- NUOVO: Salviamo le parole qui
+    
+    // UI State
     join_phrase: String,
+    show_mnemonic: bool, // <--- NUOVO: Toggle per mostrare/nascondere
 }
 
 impl RustClipApp {
-    // Rimosso show_request dai parametri
-    pub fn new(
-        _cc: &eframe::CreationContext<'_>, 
-        tx: Sender<UiCommand>, 
-        rx: Receiver<CoreEvent>, 
-        tray: AppTray
-    ) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>, tx: Sender<UiCommand>, rx: Receiver<CoreEvent>, tray: AppTray) -> Self {
         Self {
             tx, rx, 
             _tray: tray,
@@ -37,7 +36,9 @@ impl RustClipApp {
             is_paused: false,
             peers: vec![],
             my_ring_id: "Caricamento...".into(),
+            my_mnemonic: String::new(),
             join_phrase: String::new(),
+            show_mnemonic: false,
         }
     }
 
@@ -46,7 +47,12 @@ impl RustClipApp {
             match event {
                 CoreEvent::Log(entry) => self.logs.push(format!("[{}] {}", entry.timestamp, entry.message)),
                 CoreEvent::PeersUpdated(list) => self.peers = list,
-                CoreEvent::IdentityLoaded(id) => self.my_ring_id = id.discovery_id,
+                
+                // Quando arriva l'identità, salviamo anche il mnemonic
+                CoreEvent::IdentityLoaded(id) => {
+                    self.my_ring_id = id.discovery_id;
+                    self.my_mnemonic = id.mnemonic; // <--- SALVIAMO QUI
+                },
                 CoreEvent::ServiceStateChanged { running } => self.is_paused = !running,
             }
         }
@@ -57,14 +63,11 @@ impl eframe::App for RustClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_state();
 
-        // 1. GESTIONE CHIUSURA -> NASCONDI
         if ctx.input(|i| i.viewport().close_requested()) {
-            // Su Windows è cruciale chiamare PRIMA CancelClose e POI Visible(false)
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        // 2. UI
         egui::CentralPanel::default().show(ctx, |ui| {
             // HEADER
             ui.horizontal(|ui| {
@@ -88,20 +91,18 @@ impl eframe::App for RustClipApp {
 
             match self.current_tab {
                 Tab::Dashboard => {
+                    // (Codice Dashboard identico a prima...)
                     let btn_text = if self.is_paused { "▶️ RIPRENDI SYNC" } else { "⏸️ METTI IN PAUSA" };
                     if ui.add(egui::Button::new(btn_text).min_size(egui::vec2(0.0, 30.0))).clicked() {
                         let _ = self.tx.send(UiCommand::SetPaused(!self.is_paused));
                     }
-                    
                     ui.add_space(15.0);
                     ui.label(egui::RichText::new("Dispositivi Connessi:").strong());
                     egui::Frame::group(ui.style()).show(ui, |ui| {
-                        if self.peers.is_empty() {
-                            ui.label("nessun dispositivo trovato...");
-                        } else {
+                        if self.peers.is_empty() { ui.label("nessun dispositivo trovato..."); } else {
                             for (name, ip) in &self.peers {
                                 ui.horizontal(|ui| {
-                                    ui.label("🖥️");
+                                    ui.label("🖥️"); // Con il fix font dovrebbe vedersi meglio
                                     ui.label(egui::RichText::new(name).strong());
                                     ui.label(format!("({})", ip));
                                 });
@@ -115,10 +116,43 @@ impl eframe::App for RustClipApp {
                     });
                 },
                 Tab::Settings => {
-                    ui.heading("Gestione Ring");
+                    ui.heading("Le tue Credenziali");
                     ui.label(format!("ID Pubblico: {}", self.my_ring_id));
+                    
+                    ui.add_space(10.0);
+                    
+                    // --- SEZIONE SEGRETISSIMA ---
+                    ui.label("Chiave Segreta (Mnemonic):");
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            if self.show_mnemonic {
+                                // FIX: Usiamo un Label con wrapping abilitato e font monospaziato
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&self.my_mnemonic).monospace()
+                                    ).wrap()
+                                );
+                            } else {
+                                // Mostra asterischi (questo va bene su una riga)
+                                ui.label("*************************************************");
+                            }
+                            
+                            // Tasto Occhio
+                            if ui.button(if self.show_mnemonic { "🙈" } else { "👁️" }).clicked() {
+                                self.show_mnemonic = !self.show_mnemonic;
+                            }
+                        });
+                        
+                        // Tasto Copia
+                        if ui.button("📋 Copia Chiave").clicked() {
+                            ui.output_mut(|o| o.copied_text = self.my_mnemonic.clone());
+                        }
+                    });
+                    // ----------------------------
+
                     ui.add_space(20.0);
                     ui.separator();
+                    
                     ui.label(egui::RichText::new("Unisciti a un altro Ring").strong());
                     ui.text_edit_multiline(&mut self.join_phrase);
                     if ui.button("🔗 Unisciti (Join Ring)").clicked() {
@@ -127,8 +161,16 @@ impl eframe::App for RustClipApp {
                             self.join_phrase.clear();
                         }
                     }
+
                     ui.add_space(20.0);
                     ui.separator();
+
+                    ui.label(egui::RichText::new("Zona Pericolo").strong().color(egui::Color32::RED));
+                    if ui.button("⚠️ Genera Nuova Identità").clicked() {
+                        let _ = self.tx.send(UiCommand::GenerateNewIdentity);
+                    }
+                    
+                    ui.add_space(20.0);
                     if ui.button("🚪 Esci (Quit)").clicked() {
                         let _ = self.tx.send(UiCommand::Quit);
                         std::process::exit(0);

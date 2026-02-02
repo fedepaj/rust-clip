@@ -5,6 +5,8 @@ use eframe::egui;
 use flume::{Sender, Receiver};
 use crate::events::{UiCommand, CoreEvent};
 use tray_icon::menu::MenuEvent;
+use std::fs;
+use std::sync::Arc; // <--- Importiamo Arc
 
 pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result<()> {
     let tray = tray::AppTray::new()?;
@@ -14,7 +16,7 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 500.0])
+            .with_inner_size([400.0, 550.0])
             .with_resizable(false)
             .with_close_button(true)
             .with_visible(true),
@@ -28,12 +30,14 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
             let ctx = cc.egui_ctx.clone();
             let tx_clone = tx.clone();
             
-            // --- TRAY LISTENER THREAD ---
+            // --- FIX FONT SYSTEM ---
+            configure_fonts(&ctx);
+            // -----------------------
+
+            // TRAY THREAD
             std::thread::spawn(move || {
                 while let Ok(event) = MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        // FIX WINDOWS: Inviamo i comandi DIRETTAMENTE da qui
-                        // Non aspettiamo il loop update()
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -45,10 +49,43 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                     }
                 }
             });
-            // ----------------------------
 
-            // Non serve più passare flag atomici complessi
             Ok(Box::new(app::RustClipApp::new(cc, tx, rx, tray)))
         }),
     ).map_err(|e| anyhow::anyhow!("Errore GUI: {}", e))
+}
+
+fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    let font_path = if cfg!(target_os = "macos") {
+        "/System/Library/Fonts/Apple Color Emoji.ttc"
+    } else if cfg!(target_os = "windows") {
+        "C:\\Windows\\Fonts\\seguiemj.ttf"
+    } else {
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf" 
+    };
+
+    if let Ok(font_data) = fs::read(font_path) {
+        println!("🎨 Caricato font Emoji di sistema: {}", font_path);
+        
+        // --- FIX QUI SOTTO ---
+        // Avvolgiamo in Arc::new(...) come richiesto dal compilatore
+        fonts.font_data.insert(
+            "system_emoji".to_owned(),
+            Arc::new(egui::FontData::from_owned(font_data)), 
+        );
+
+        if let Some(vec) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            vec.push("system_emoji".to_owned());
+        }
+        
+        if let Some(vec) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+            vec.push("system_emoji".to_owned());
+        }
+    } else {
+        eprintln!("⚠️ Impossibile trovare il font Emoji in: {}", font_path);
+    }
+
+    ctx.set_fonts(fonts);
 }

@@ -4,7 +4,7 @@ use rand::{RngCore, thread_rng};
 use serde::{Serialize, Deserialize};
 use std::fs;
 use std::path::Path;
-use sha2::Sha256;
+use sha2::{Sha256, Digest};
 use hkdf::Hkdf;
 use aes_gcm::{
     aead::{Aead, KeyInit}, // Rimossa Payload
@@ -145,5 +145,18 @@ impl RingIdentity {
         let stored: StoredIdentity = serde_json::from_slice(&plaintext)?;
         
         Self::from_mnemonic(&stored.mnemonic)
+    }
+
+    pub fn get_derived_device_id() -> String {
+        // Usa machine_uid per ottenere l'ID univoco dell'hardware
+        let machine_id = machine_uid::get().unwrap_or_else(|_| "unknown_device".to_string());
+        
+        // Facciamo l'hash per anonimizzarlo e accorciarlo
+        let mut hasher = Sha256::new();
+        hasher.update(machine_id.as_bytes());
+        let result = hasher.finalize();
+        
+        // Prendiamo i primi 2 byte (4 caratteri hex)
+        hex::encode(&result[0..2])
     }
 }
