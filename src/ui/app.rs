@@ -3,7 +3,7 @@ use crate::events::{UiCommand, CoreEvent};
 use flume::{Sender, Receiver};
 use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
-use tray_icon::menu::MenuEvent; // Per ascoltare i click del menu
+use tray_icon::menu::MenuEvent; 
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -11,24 +11,19 @@ enum Tab { Dashboard, Settings }
 pub struct RustClipApp {
     tx: Sender<UiCommand>,
     rx: Receiver<CoreEvent>,
-    
-    // Tray System
     tray: AppTray,
     
-    // Stato UI
     current_tab: Tab,
     logs: Vec<String>,
     is_paused: bool,
     peers: Vec<(String, SocketAddr)>,
     
-    // Form Inputs
     my_ring_id: String,
     join_phrase: String,
-    show_mnemonic_window: bool,
+    // show_mnemonic_window: bool, // (Commentato per ora se non usato)
 }
 
 impl RustClipApp {
-    // Aggiunto parametro 'tray'
     pub fn new(_cc: &eframe::CreationContext<'_>, tx: Sender<UiCommand>, rx: Receiver<CoreEvent>, tray: AppTray) -> Self {
         Self {
             tx, rx, tray,
@@ -38,12 +33,12 @@ impl RustClipApp {
             peers: vec![],
             my_ring_id: "Caricamento...".into(),
             join_phrase: String::new(),
-            show_mnemonic_window: false,
+            // show_mnemonic_window: false,
         }
     }
 
     fn update_state(&mut self) {
-        // 1. Messaggi dal Backend
+        // Leggi messaggi dal Backend
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 CoreEvent::Log(entry) => self.logs.push(format!("[{}] {}", entry.timestamp, entry.message)),
@@ -52,53 +47,41 @@ impl RustClipApp {
                 CoreEvent::ServiceStateChanged { running } => self.is_paused = !running,
             }
         }
-
-        // 2. Messaggi dalla Tray Icon (Menu)
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.tray.menu_item_quit.id() {
-                let _ = self.tx.send(UiCommand::Quit);
-                std::process::exit(0);
-            }
-            if event.id == self.tray.menu_item_show.id() {
-                // Non possiamo forzare la visibilità da qui direttamente in Egui 0.30 facilmente
-                // ma possiamo gestirlo nel loop update se usiamo un flag,
-                // oppure Eframe gestisce il focus se la finestra è già aperta.
-                // Per ora la logica "Show" è automatica se l'app è in primo piano.
-                // *Nota per implementazione avanzata: servirebbe salvare il context.*
-            }
-        }
     }
 }
 
 impl eframe::App for RustClipApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 1. Aggiorna stato dal backend
         self.update_state();
 
-        // --- GESTIONE CHIUSURA FINESTRA ---
-        // Se l'utente preme "X", noi cancelliamo il comando di chiusura e nascondiamo la finestra.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            // Diciamo a Eframe di NON chiudere
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            // Diciamo a Eframe di nascondere la finestra
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
-
-        // --- GESTIONE APERTURA DA TRAY ---
-        // Se c'è stato un click "Show" (controlliamo di nuovo qui per avere accesso a ctx)
+        // 2. CONTROLLO TRAY ICON (Fondamentale farlo qui)
+        // Leggiamo gli eventi del menu di sistema
         if let Ok(event) = MenuEvent::receiver().try_recv() {
              if event.id == self.tray.menu_item_show.id() {
+                 // ORDINE: Prima rendi visibile, poi porta in primo piano, poi richiedi repaint
                  ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                  ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                 ctx.request_repaint(); 
              }
              if event.id == self.tray.menu_item_quit.id() {
+                 println!("Chiusura richiesta da Tray");
+                 // Manda comando di stop al backend (opzionale) e chiudi
+                 let _ = self.tx.send(UiCommand::Quit);
                  std::process::exit(0);
              }
         }
 
+        // 3. GESTIONE CHIUSURA FINESTRA ("X" button)
+        if ctx.input(|i| i.viewport().close_requested()) {
+            // Invece di chiudere, nascondiamo
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
+        // 4. UI (Disegnamo solo se visibile per risparmiare GPU, 
+        // ma Egui gestisce questo internamente se la finestra è Hidden)
         egui::CentralPanel::default().show(ctx, |ui| {
-            // ... (Tutto il codice UI precedente rimane identico) ...
-            // Copia-Incolla il contenuto di CentralPanel dallo step precedente
-            
             // HEADER
             ui.horizontal(|ui| {
                 ui.heading("RustClip 🦀");
@@ -121,7 +104,7 @@ impl eframe::App for RustClipApp {
 
             match self.current_tab {
                 Tab::Dashboard => {
-                    let btn_text = if self.is_paused { "▶️ RIPRENDI SINCRONIZZAZIONE" } else { "⏸️ METTI IN PAUSA" };
+                    let btn_text = if self.is_paused { "▶️ RIPRENDI SYNC" } else { "⏸️ METTI IN PAUSA" };
                     if ui.add(egui::Button::new(btn_text).min_size(egui::vec2(0.0, 30.0))).clicked() {
                         let _ = self.tx.send(UiCommand::SetPaused(!self.is_paused));
                     }
@@ -170,7 +153,9 @@ impl eframe::App for RustClipApp {
             }
         });
         
-        // Refresh a 5-10fps quando idle per non consumare CPU, ma abbastanza reattivo per la tray
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        // 5. IL FIX CRUCIALE (HEARTBEAT)
+        // Questo dice a Egui: "Anche se non succede nulla, svegliati tra 500ms"
+        // Questo permette di controllare il canale Tray anche se la finestra è nascosta.
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 }
