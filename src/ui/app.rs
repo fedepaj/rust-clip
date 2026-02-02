@@ -56,7 +56,10 @@ impl RustClipApp {
                     self.my_ring_id = id.discovery_id;
                     self.my_mnemonic = id.mnemonic;
                 },
-                CoreEvent::ServiceStateChanged { running } => self.is_paused = !running,
+                CoreEvent::ServiceStateChanged { running } => {
+                    println!("UI: ServiceStateChanged -> running={}", running);
+                    self.is_paused = !running;
+                },
                 CoreEvent::Notify { title, body } => {
                     // Visualizza notifica nativa
                     let _ = Notification::new().summary(&title).body(&body).show();

@@ -56,6 +56,9 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        // FIX: Force to top then normal to grab focus on Windows
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
                         ctx_t.request_repaint();
                     } else if event.id == quit_id {
                         let _ = tx_t.send(UiCommand::Quit);
