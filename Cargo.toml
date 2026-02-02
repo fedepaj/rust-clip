@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Async & System
+# System & Async
 tokio = { version = "1.32", features = ["full"] }
 anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
@@ -13,19 +13,21 @@ local-ip-address = "0.5"
 # Crypto Core
 rand = "0.8"
 sha2 = "0.10"
-hmac = "0.12"
-hkdf = "0.12" # Key Derivation Function (lo standard per derivare chiavi)
-aes-gcm = "0.10" # Cifratura simmetrica autenticata (per il file e per la rete)
+hkdf = "0.12"
+aes-gcm = "0.10" # Per il file su disco
+chacha20poly1305 = "0.10" # Per la rete (XChaCha20)
 bip39 = "2.0"
 hex = "0.4"
-base64 = "0.21"
+machine-uid = "0.5"
 
-# Serialization
+# Data & State
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+bincode = "1.3" # Serializzazione binaria efficiente per la rete
+dashmap = "5.5" # Mappa thread-safe per la lista peer
+
+# Clipboard
+arboard = "3.3"
 
 # Networking
 mdns-sd = "0.10"
-
-# Machine ID (Per l'obfuscation)
-machine-uid = "0.5"

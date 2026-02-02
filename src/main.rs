@@ -1,9 +1,14 @@
 mod identity;
-mod discovery; // Include il modulo discovery.rs
+mod discovery;
+mod crypto; // Nuovo
+mod clipboard; // Nuovo
 
 use clap::{Parser, Subcommand};
 use identity::RingIdentity;
+use discovery::PeerMap;
 use std::io::{self, Write};
+use std::sync::Arc;
+use dashmap::DashMap;
 
 #[derive(Parser)]
 #[command(name = "rust-clip")]
@@ -14,11 +19,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Crea nuovo Ring (Genera parole)
     New,
-    /// Unisciti a Ring (Inserisci parole)
     Join,
-    /// Avvia la sincronizzazione (Discovery LAN)
     Start,
 }
 
@@ -29,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::New => {
             let _id = RingIdentity::create_new()?;
-            println!("✅ Ora puoi lanciare 'rust-clip start' su questo PC.");
+            println!("✅ Configurazione completata.");
             Ok(())
         }
         Commands::Join => {
@@ -48,17 +50,35 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Commands::Start => {
-            println!("📂 Caricamento configurazione...");
+            println!("🚀 Avvio RustClip...");
+            
+            // 1. Carica Identità
             let identity = match RingIdentity::load() {
                 Ok(id) => id,
                 Err(_) => {
-                    println!("⚠️ Nessuna configurazione trovata. Ne creo una temporanea.");
-                    RingIdentity::create_new()?
+                    println!("⚠️ Nessuna configurazione. Esegui 'new' o 'join' prima.");
+                    return Ok(());
                 }
             };
+
+            // 2. Crea Mappa Peers condivisa
+            let peers: PeerMap = Arc::new(DashMap::new());
+
+            // 3. Avvia Discovery in un task separato (è bloccante nel suo loop)
+            let disc_identity = identity.clone();
+            let disc_peers = peers.clone();
             
-            // Avvia la discovery (Bloccante)
-            discovery::start_lan_discovery(identity)?;
+            // Usiamo spawn_blocking per il discovery perché mdns-sd usa thread interni
+            std::thread::spawn(move || {
+                if let Err(e) = discovery::start_lan_discovery(disc_identity, disc_peers) {
+                    eprintln!("Errore Discovery: {}", e);
+                }
+            });
+
+            // 4. Avvia Clipboard Sync (Monitor + Server)
+            // Questo bloccherà il main thread (correttamente)
+            clipboard::start_clipboard_sync(identity, peers).await?;
+            
             Ok(())
         }
     }
