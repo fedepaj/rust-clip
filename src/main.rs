@@ -1,7 +1,8 @@
 mod identity;
 mod discovery;
-mod crypto; // Nuovo
-mod clipboard; // Nuovo
+mod crypto;
+mod clipboard;
+mod firewall; // <--- AGGIUNGI QUESTO
 
 use clap::{Parser, Subcommand};
 use identity::RingIdentity;
@@ -51,8 +52,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Start => {
             println!("🚀 Avvio RustClip...");
+
+            // 1. CONFIGURAZIONE FIREWALL (Solo Windows)
+            // Se fallisce, avvisa l'utente ma continua comunque
+            firewall::ensure_open_port();
             
-            // 1. Carica Identità
+            // 2. Carica Identità
             let identity = match RingIdentity::load() {
                 Ok(id) => id,
                 Err(_) => {
@@ -61,22 +66,20 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            // 2. Crea Mappa Peers condivisa
+            // 3. Crea Mappa Peers condivisa
             let peers: PeerMap = Arc::new(DashMap::new());
 
-            // 3. Avvia Discovery in un task separato (è bloccante nel suo loop)
+            // 4. Avvia Discovery
             let disc_identity = identity.clone();
             let disc_peers = peers.clone();
             
-            // Usiamo spawn_blocking per il discovery perché mdns-sd usa thread interni
             std::thread::spawn(move || {
                 if let Err(e) = discovery::start_lan_discovery(disc_identity, disc_peers) {
                     eprintln!("Errore Discovery: {}", e);
                 }
             });
 
-            // 4. Avvia Clipboard Sync (Monitor + Server)
-            // Questo bloccherà il main thread (correttamente)
+            // 5. Avvia Clipboard Sync
             clipboard::start_clipboard_sync(identity, peers).await?;
             
             Ok(())
