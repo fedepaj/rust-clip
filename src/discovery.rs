@@ -9,9 +9,8 @@ use dashmap::DashMap;
 use std::net::SocketAddr;
 
 const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
-const TCP_PORT: u16 = 5566; // Porta fissa per il trasferimento dati
+const TCP_PORT: u16 = 5566; 
 
-// La mappa condivisa: ID Univoco -> Indirizzo IP
 pub type PeerMap = Arc<DashMap<String, SocketAddr>>;
 
 pub fn start_lan_discovery(identity: RingIdentity, peers: PeerMap) -> Result<()> {
@@ -24,7 +23,6 @@ pub fn start_lan_discovery(identity: RingIdentity, peers: PeerMap) -> Result<()>
     
     let mdns = ServiceDaemon::new()?;
 
-    // Annunciamo la porta TCP vera (5566)
     let instance_name = format!("RustClip-{:04x}", device_id);
     let ip = "0.0.0.0"; 
     
@@ -63,21 +61,33 @@ pub fn start_lan_discovery(identity: RingIdentity, peers: PeerMap) -> Result<()>
                         }
 
                         if clean_id == my_discovery_id {
-                            // Trovato un peer valido!
-                            if let Some(ip) = info.get_addresses().iter().next() {
-                                let addr = SocketAddr::new(*ip, info.get_port());
-                                
-                                // Inseriamo nella mappa (o aggiorniamo)
-                                // Usiamo il nome completo come chiave univoca
+                            // --- FIX IPV4 ---
+                            // Cerchiamo esplicitamente un indirizzo IPv4
+                            let mut target_addr: Option<SocketAddr> = None;
+                            
+                            for ip in info.get_addresses() {
+                                if ip.is_ipv4() {
+                                    target_addr = Some(SocketAddr::new(*ip, info.get_port()));
+                                    break; // Trovato! Usiamo questo.
+                                }
+                            }
+
+                            // Se non troviamo IPv4, proviamo IPv6 solo come fallback disperato
+                            if target_addr.is_none() {
+                                if let Some(ip) = info.get_addresses().iter().next() {
+                                     target_addr = Some(SocketAddr::new(*ip, info.get_port()));
+                                }
+                            }
+
+                            if let Some(addr) = target_addr {
                                 if !peers.contains_key(found_fullname) {
-                                    println!("➕ Peer Aggiunto: {} -> {}", found_fullname, addr);
+                                    println!("➕ Peer Aggiunto (IPv4 Preferito): {} -> {}", found_fullname, addr);
                                     peers.insert(found_fullname.to_string(), addr);
                                 }
                             }
                         }
                     }
                 }
-                // Gestione rimozione peer (se si disconnettono)
                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
                     if peers.contains_key(&fullname) {
                         println!("➖ Peer Rimosso: {}", fullname);
