@@ -4,21 +4,33 @@ pub mod tray;
 use eframe::egui;
 use flume::{Sender, Receiver};
 use crate::events::{UiCommand, CoreEvent};
-use tray_icon::menu::MenuEvent;
+// Rimosso MenuEvent da qui perché lo usiamo tramite il percorso completo nel thread
 use std::fs;
-use std::sync::Arc; // <--- Importiamo Arc
+use std::sync::Arc;
+use image::GenericImageView; // Importante per usare .dimensions()
 
 pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result<()> {
     let tray = tray::AppTray::new()?;
     
-    let show_id = tray.menu_item_show.id().clone();
-    let quit_id = tray.menu_item_quit.id().clone();
+    // --- CARICAMENTO ICONA PER FINESTRA ---
+    let icon_bytes = include_bytes!("../../assets/icon.png");
+    let image = image::load_from_memory(icon_bytes)
+        .map_err(|e| anyhow::anyhow!("Errore decodifica icona: {}", e))?;
+    
+    // FIX: Usiamo il metodo sull'oggetto 'image'
+    let (width, height) = image.dimensions();
+    
+    let icon_data = eframe::egui::IconData {
+        rgba: image.to_rgba8().into_raw(),
+        width: width as u32,
+        height: height as u32,
+    };
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([400.0, 550.0])
             .with_resizable(false)
-            .with_close_button(true)
+            .with_icon(Arc::new(icon_data)) // Setta l'icona della finestra (Taskbar/Dock)
             .with_visible(true),
         ..Default::default()
     };
@@ -28,23 +40,23 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
         options,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
-            let tx_clone = tx.clone();
-            
-            // --- FIX FONT SYSTEM ---
             configure_fonts(&ctx);
-            // -----------------------
+            
+            let show_id = tray.menu_item_show.id().clone();
+            let quit_id = tray.menu_item_quit.id().clone();
+            let tx_t = tx.clone();
+            let ctx_t = ctx.clone();
 
-            // TRAY THREAD
+            // TRAY LISTENER THREAD
             std::thread::spawn(move || {
-                while let Ok(event) = MenuEvent::receiver().recv() {
+                // Usiamo il percorso completo per evitare warning sugli import
+                while let Ok(event) = tray_icon::menu::MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        ctx.request_repaint();
-                    } 
-                    else if event.id == quit_id {
-                        let _ = tx_clone.send(UiCommand::Quit);
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        ctx_t.request_repaint();
+                    } else if event.id == quit_id {
+                        let _ = tx_t.send(UiCommand::Quit);
                         std::process::exit(0);
                     }
                 }
@@ -67,10 +79,6 @@ fn configure_fonts(ctx: &egui::Context) {
     };
 
     if let Ok(font_data) = fs::read(font_path) {
-        println!("🎨 Caricato font Emoji di sistema: {}", font_path);
-        
-        // --- FIX QUI SOTTO ---
-        // Avvolgiamo in Arc::new(...) come richiesto dal compilatore
         fonts.font_data.insert(
             "system_emoji".to_owned(),
             Arc::new(egui::FontData::from_owned(font_data)), 
@@ -83,8 +91,6 @@ fn configure_fonts(ctx: &egui::Context) {
         if let Some(vec) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
             vec.push("system_emoji".to_owned());
         }
-    } else {
-        eprintln!("⚠️ Impossibile trovare il font Emoji in: {}", font_path);
     }
 
     ctx.set_fonts(fonts);
