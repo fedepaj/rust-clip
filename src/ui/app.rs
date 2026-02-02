@@ -3,7 +3,6 @@ use crate::events::{UiCommand, CoreEvent};
 use flume::{Sender, Receiver};
 use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
-// Rimosso MenuEvent da qui, gestito in mod.rs
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -12,8 +11,7 @@ pub struct RustClipApp {
     tx: Sender<UiCommand>,
     rx: Receiver<CoreEvent>,
     
-    // Manteniamo la tray nella struct solo per evitare che venga distrutta (Dropped)
-    // Se la droppiamo, l'icona sparisce.
+    // Manteniamo la tray viva
     _tray: AppTray, 
     
     current_tab: Tab,
@@ -29,7 +27,7 @@ impl RustClipApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, tx: Sender<UiCommand>, rx: Receiver<CoreEvent>, tray: AppTray) -> Self {
         Self {
             tx, rx, 
-            _tray: tray, // La salviamo col "_" per dire che non la usiamo attivamente qui
+            _tray: tray,
             current_tab: Tab::Dashboard,
             logs: vec![],
             is_paused: false,
@@ -55,13 +53,13 @@ impl eframe::App for RustClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_state();
 
-        // 1. GESTIONE CHIUSURA FINESTRA ("X" button) -> Nascondi
+        // GESTIONE CHIUSURA -> NASCONDI
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        // 2. UI
+        // UI
         egui::CentralPanel::default().show(ctx, |ui| {
             // HEADER
             ui.horizontal(|ui| {
@@ -134,7 +132,7 @@ impl eframe::App for RustClipApp {
             }
         });
         
-        // Manteniamo un refresh lento quando la finestra è aperta
+        // Manteniamo un refresh minimo (utile per vedere i log arrivare quando la finestra è aperta)
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 }
