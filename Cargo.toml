@@ -2,34 +2,51 @@
 name = "rust-clip"
 version = "0.1.0"
 edition = "2021"
+default-run = "rust-clip"
+
+[[bin]]
+name = "rust-clip"
+path = "src/main.rs"
 
 [dependencies]
-# System & Async
+# --- SYSTEM & ASYNC ---
 tokio = { version = "1.32", features = ["full"] }
 anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 local-ip-address = "0.5"
+flume = "0.11"
+chrono = "0.4"
+directories = "5.0"
+open = "5.0"
 
-# Crypto Core
+# --- CRYPTO ---
 rand = "0.8"
 sha2 = "0.10"
 hkdf = "0.12"
-aes-gcm = "0.10" # Per il file su disco
-chacha20poly1305 = "0.10" # Per la rete (XChaCha20)
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
 bip39 = "2.0"
 hex = "0.4"
 machine-uid = "0.5"
 
-# Data & State
+# --- DATA ---
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = "1.3" # Serializzazione binaria efficiente per la rete
-dashmap = "5.5" # Mappa thread-safe per la lista peer
+bincode = "1.3"
+dashmap = "5.5"
 
-# Clipboard
+# --- CLIPBOARD & MEDIA ---
 arboard = "3.3"
+image = "0.24"
 
-# Networking
+# --- NETWORKING ---
 mdns-sd = "0.10"
 
-image = "0.24"
+# --- GUI & TRAY ---
+# AGGIORNAMENTO CRUCIALE QUI SOTTO:
+eframe = "0.30.0"  # Salto di versione per fix macOS
+tray-icon = "0.19" # Aggiorniamo anche questo per compatibilità
+# tao = "0.28"      # Rimuoviamo tao esplicito per evitare conflitti con winit di eframe
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.52", features = ["Win32_System_Console"] }

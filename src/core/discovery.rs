@@ -1,4 +1,4 @@
-use crate::identity::RingIdentity;
+use crate::core::identity::RingIdentity;
 use anyhow::Result;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::thread;

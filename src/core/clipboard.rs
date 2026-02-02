@@ -1,6 +1,6 @@
-use crate::identity::RingIdentity;
-use crate::discovery::PeerMap;
-use crate::crypto::CryptoLayer;
+use crate::core::identity::RingIdentity;
+use crate::core::discovery::PeerMap;
+use crate::core::crypto::CryptoLayer;
 use anyhow::Result;
 use arboard::{Clipboard, ImageData};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
