@@ -80,7 +80,7 @@ fn run_async_backend(
              }));
         }
 
-        core::firewall::ensure_open_port();
+        // core::firewall::ensure_open_port();
         
         // 1. CARICA CONFIGURAZIONE
         let mut config = AppConfig::load(); // <--- LOAD

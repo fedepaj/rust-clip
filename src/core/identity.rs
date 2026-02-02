@@ -3,21 +3,19 @@ use bip39::{Mnemonic, Language};
 use rand::{RngCore, thread_rng};
 use serde::{Serialize, Deserialize};
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use hkdf::Hkdf;
 use aes_gcm::{
-    aead::{Aead, KeyInit}, // Rimossa Payload
+    aead::{Aead, KeyInit}, 
     Aes256Gcm, Nonce 
 };
 use machine_uid;
-
-const IDENTITY_FILE: &str = ".identity.enc"; 
+use directories::ProjectDirs;
 
 #[derive(Clone, Debug)]
 pub struct RingIdentity {
     pub mnemonic: String,
-    // Chiavi derivate 
     pub discovery_id: String,     
     pub shared_secret: [u8; 32],  
 }
@@ -28,7 +26,6 @@ struct StoredIdentity {
 }
 
 impl RingIdentity {
-    // --- CREAZIONE ---
     pub fn create_new() -> Result<Self> {
         let mut entropy = [0u8; 32];
         thread_rng().fill_bytes(&mut entropy);
@@ -36,11 +33,7 @@ impl RingIdentity {
         let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy)?;
         let phrase = mnemonic.to_string();
 
-        println!("\n=== NUOVO RING (SECURE) ===");
-        println!("Parole segrete (Salvale altrove, questo file è vincolato a questo PC):");
-        println!("-------------------------------------------------------");
-        println!("{}", phrase);
-        println!("-------------------------------------------------------\n");
+        println!("Nuovo Ring Creato");
         
         let identity = Self::from_mnemonic(&phrase)?;
         identity.save()?;
@@ -53,7 +46,6 @@ impl RingIdentity {
         
         let entropy = mnemonic.to_entropy(); 
 
-        // 1. Deriviamo il Discovery ID (Pubblico)
         let hkdf = Hkdf::<Sha256>::new(None, &entropy);
         let mut discovery_bytes = [0u8; 32];
         hkdf.expand(b"rustclip_discovery_v1", &mut discovery_bytes)
@@ -61,7 +53,6 @@ impl RingIdentity {
         
         let discovery_id = hex::encode(&discovery_bytes[0..16]);
 
-        // 2. Deriviamo lo Shared Secret (Privato)
         let mut secret_bytes = [0u8; 32];
         hkdf.expand(b"rustclip_secret_v1", &mut secret_bytes)
             .map_err(|_| anyhow!("HKDF error"))?;
@@ -73,9 +64,7 @@ impl RingIdentity {
         })
     }
 
-    // --- STORAGE SICURO (OBFUSCATION) ---
     fn get_machine_key() -> Result<[u8; 32]> {
-        // FIX: Usiamo map_err invece di context per gestire l'errore Box<dyn Error>
         let machine_id = machine_uid::get()
             .map_err(|e| anyhow!("Impossibile leggere Machine ID: {}", e))?;
         
@@ -86,6 +75,32 @@ impl RingIdentity {
         
         Ok(key)
     }
+
+    // Funzione per ottenere il percorso assoluto e stabile su tutti gli OS
+    fn get_identity_path() -> Result<PathBuf> {
+        let proj = ProjectDirs::from("com", "rustclip", "rust-clip")
+            .ok_or_else(|| anyhow::anyhow!("Impossibile determinare cartella home"))?;
+        
+        let config_dir = proj.config_dir();
+        if !config_dir.exists() {
+            fs::create_dir_all(config_dir)?;
+        }
+        
+        Ok(config_dir.join("identity.enc"))
+    }
+
+    // --- FUNZIONE CHE MANCAVA ---
+    pub fn get_derived_device_id() -> String {
+        let machine_id = machine_uid::get().unwrap_or_else(|_| "unknown_device".to_string());
+        
+        let mut hasher = Sha256::new();
+        hasher.update(machine_id.as_bytes());
+        let result = hasher.finalize();
+        
+        // Primi 4 caratteri hex dell'hash
+        hex::encode(&result[0..2])
+    }
+    // ----------------------------
 
     pub fn save(&self) -> Result<()> {
         let stored = StoredIdentity { mnemonic: self.mnemonic.clone() };
@@ -105,32 +120,35 @@ impl RingIdentity {
         file_content.extend_from_slice(&nonce_bytes);
         file_content.extend_from_slice(&ciphertext);
 
+        let path = Self::get_identity_path()?;
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Scriviamo prima il file, poi cambiamo i permessi
-            fs::write(IDENTITY_FILE, &file_content)?;
-            let mut perms = fs::metadata(IDENTITY_FILE)?.permissions();
+            fs::write(&path, &file_content)?;
+            let mut perms = fs::metadata(&path)?.permissions();
             perms.set_mode(0o600); 
-            fs::set_permissions(IDENTITY_FILE, perms)?;
+            fs::set_permissions(&path, perms)?;
         }
         #[cfg(not(unix))]
         {
-            fs::write(IDENTITY_FILE, &file_content)?;
+            fs::write(&path, &file_content)?;
         }
 
-        println!("🔒 Identità salvata e blindata su questo hardware ({})", IDENTITY_FILE);
+        println!("🔒 Identità salvata in {:?}", path);
         Ok(())
     }
 
     pub fn load() -> Result<Self> {
-        if !Path::new(IDENTITY_FILE).exists() {
-            return Err(anyhow!("Nessuna identità trovata."));
+        let path = Self::get_identity_path()?;
+
+        if !path.exists() {
+            return Err(anyhow!("Nessuna identità trovata in {:?}", path));
         }
 
-        let file_content = fs::read(IDENTITY_FILE)?;
+        let file_content = fs::read(path)?;
         if file_content.len() < 12 {
-            return Err(anyhow!("File identità corrotto (troppo corto)"));
+            return Err(anyhow!("File identità corrotto"));
         }
 
         let (nonce_bytes, ciphertext) = file_content.split_at(12);
@@ -140,23 +158,10 @@ impl RingIdentity {
         let cipher = Aes256Gcm::new(&key_bytes.into());
 
         let plaintext = cipher.decrypt(nonce, ciphertext)
-            .map_err(|_| anyhow!("Decifrazione fallita! File corrotto o PC diverso."))?;
+            .map_err(|_| anyhow!("Decifrazione fallita!"))?;
 
         let stored: StoredIdentity = serde_json::from_slice(&plaintext)?;
         
         Self::from_mnemonic(&stored.mnemonic)
-    }
-
-    pub fn get_derived_device_id() -> String {
-        // Usa machine_uid per ottenere l'ID univoco dell'hardware
-        let machine_id = machine_uid::get().unwrap_or_else(|_| "unknown_device".to_string());
-        
-        // Facciamo l'hash per anonimizzarlo e accorciarlo
-        let mut hasher = Sha256::new();
-        hasher.update(machine_id.as_bytes());
-        let result = hasher.finalize();
-        
-        // Prendiamo i primi 2 byte (4 caratteri hex)
-        hex::encode(&result[0..2])
     }
 }

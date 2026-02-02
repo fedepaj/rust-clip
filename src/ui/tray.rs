@@ -1,6 +1,7 @@
 use tray_icon::{TrayIconBuilder, TrayIcon};
 use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use anyhow::Result;
+use image::GenericImageView; // Importante per leggere le dimensioni
 
 pub struct AppTray {
     pub icon: TrayIcon,
@@ -15,12 +16,12 @@ impl AppTray {
         let menu_item_show = MenuItem::new("Apri Dashboard", true, None);
         let menu_item_quit = MenuItem::new("Esci (Quit)", true, None);
 
+        // Costruiamo il menu
         tray_menu.append(&menu_item_show)?;
         tray_menu.append(&PredefinedMenuItem::separator())?;
         tray_menu.append(&menu_item_quit)?;
 
-        // Carichiamo un'icona (Qui generiamo un quadrato rosso finto per test)
-        // In produzione caricheremo un PNG.
+        // Carichiamo l'icona incastonata
         let icon = load_icon()?;
 
         let tray_icon = TrayIconBuilder::new()
@@ -37,17 +38,19 @@ impl AppTray {
     }
 }
 
-// Genera un'icona "pixel art" al volo (4 red dots)
 fn load_icon() -> Result<tray_icon::Icon> {
-    let width = 64;
-    let height = 64;
-    let mut rgba = Vec::new();
-    for _ in 0..height {
-        for _ in 0..width {
-            // Un bel colore arancione Rust (R, G, B, A)
-            rgba.extend_from_slice(&[255, 100, 0, 255]);
-        }
-    }
+    // Leggiamo il file a tempo di compilazione. 
+    // Il percorso è relativo al file sorgente corrente (src/ui/tray.rs)
+    // Quindi ../../assets/icon.png punta alla root/assets/icon.png
+    let icon_bytes = include_bytes!("../../assets/icon.png");
+
+    // Decodifichiamo il PNG/ICO dalla memoria
+    let image = image::load_from_memory(icon_bytes)
+        .map_err(|e| anyhow::anyhow!("Errore decodifica icona: {}", e))?;
+    
+    let (width, height) = image.dimensions();
+    let rgba = image.to_rgba8().into_raw();
+
     tray_icon::Icon::from_rgba(rgba, width, height)
-        .map_err(|e| anyhow::anyhow!("Icon error: {}", e))
+        .map_err(|e| anyhow::anyhow!("Errore creazione tray icon: {}", e))
 }

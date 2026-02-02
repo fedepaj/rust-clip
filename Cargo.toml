@@ -2,6 +2,9 @@
 name = "rust-clip"
 version = "0.1.0"
 edition = "2021"
+authors = ["Federico Paglioni <paglioni.federico@gmail.com>"]  # <--- OBBLIGATORIO per WiX
+description = "Universal Clipboard Sync"
+license = "MIT" # <--- OBBLIGATORIO (o Apache-2.0)
 default-run = "rust-clip"
 
 [[bin]]
