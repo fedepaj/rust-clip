@@ -56,3 +56,13 @@ hostname = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation"] }
+
+[package.metadata.bundle]
+name = "RustClip"
+identifier = "com.rustclip.app" # Questo ID abilita le notifiche su Mac!
+icon = ["assets/icon.png"]
+version = "1.0.0"
+copyright = "Copyright 2024 RustClip"
+category = "Productivity"
+short_description = "Universal Clipboard Sync"
+long_description = "Share clipboard content between devices via LAN."
