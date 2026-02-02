@@ -52,22 +52,26 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                 // Usiamo il percorso completo per evitare warning sugli import
                 while let Ok(event) = tray_icon::menu::MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        println!("Tray: Restore requested - Sending Visible(true)");
-                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        println!("Tray: Restore requested"); 
                         
-                        println!("Tray: Sending Minimized(false)");
+                        // FIX: Change order and add delays to help Windows process commands
+                        // 1. Ensure not minimized
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                         
-                        println!("Tray: Sending Focus");
+                        // 2. Make visible
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        
+                        // 3. Focus
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                         
-                        println!("Tray: Sending AlwaysOnTop");
+                        // 4. Force Top/Normal dance
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
-                        
-                        println!("Tray: Sending Normal Level");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
                         
-                        println!("Tray: Requesting Repaint");
                         ctx_t.request_repaint();
                     } else if event.id == quit_id {
                         let _ = tx_t.send(UiCommand::Quit);
