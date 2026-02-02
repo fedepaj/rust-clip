@@ -2,10 +2,12 @@ use crate::core::identity::RingIdentity;
 use crate::core::discovery::PeerMap;
 use crate::core::crypto::CryptoLayer;
 use crate::core::config::AppConfig;
+use crate::events::CoreEvent; // NUOVO
+use flume::Sender; // NUOVO
 use anyhow::Result;
 use arboard::{Clipboard, ImageData};
-use tokio::io::{AsyncReadExt, AsyncWriteExt}; // AsyncWriteExt serve per stream.write_all
-use tokio::net::{TcpListener, TcpStream};    // TcpStream serve per connect
+use tokio::io::{AsyncReadExt, AsyncWriteExt}; 
+use tokio::net::{TcpListener, TcpStream};    
 use tokio::time::{sleep, Duration};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +15,7 @@ use sha2::{Sha256, Digest};
 use std::collections::HashSet;
 use std::borrow::Cow;
 use image::ImageEncoder;
-use notify_rust::Notification;
+// RIMOSSO: use notify_rust::Notification;
 
 const MAX_PACKET_SIZE: usize = 50 * 1024 * 1024;
 
@@ -29,7 +31,8 @@ pub async fn start_clipboard_sync(
     identity: RingIdentity, 
     peers: PeerMap,
     config: AppConfig,
-    global_pause: Arc<AtomicBool>
+    global_pause: Arc<AtomicBool>,
+    tx_event: Option<Sender<CoreEvent>> // NUOVO PARAMS
 ) -> Result<()> {
     let crypto = Arc::new(CryptoLayer::new(&identity.shared_secret));
     let recent_hashes: RecentHashes = Arc::new(Mutex::new(HashSet::new()));
@@ -39,9 +42,10 @@ pub async fn start_clipboard_sync(
     let server_hashes = recent_hashes.clone();
     let server_busy = busy_writing.clone();
     let server_config = config.clone();
+    let server_tx = tx_event.clone(); // Clone for server
     
     tokio::spawn(async move {
-        if let Err(e) = run_server(server_crypto, server_hashes, server_busy, server_config).await {
+        if let Err(e) = run_server(server_crypto, server_hashes, server_busy, server_config, server_tx).await {
             eprintln!("❌ Errore Server TCP: {}", e);
         }
     });
@@ -125,7 +129,8 @@ async fn run_server(
     crypto: Arc<CryptoLayer>, 
     recent_hashes: RecentHashes,
     busy_writing: Arc<AtomicBool>,
-    config: AppConfig
+    config: AppConfig,
+    tx_event: Option<Sender<CoreEvent>>
 ) -> Result<()> {
     let listener = TcpListener::bind("0.0.0.0:5566").await?;
     
@@ -135,6 +140,7 @@ async fn run_server(
         let hashes_ref = recent_hashes.clone();
         let busy_ref = busy_writing.clone();
         let config_ref = config.clone();
+        let tx_ref = tx_event.clone(); 
 
         tokio::spawn(async move {
             let mut len_buf = [0u8; 4];
@@ -162,7 +168,12 @@ async fn run_server(
                                         println!("📩 RX Testo: {:.20}...", text);
                                         let _ = cb.set_text(text);
                                         if config_ref.notifications_enabled {
-                                            let _ = Notification::new().summary("RustClip").body("📋 Testo copiato").show();
+                                            if let Some(tx) = tx_ref {
+                                                let _ = tx.send(CoreEvent::Notify { 
+                                                    title: "RustClip".into(), 
+                                                    body: "📋 Testo copiato".into() 
+                                                });
+                                            }
                                         }
                                     },
                                     ClipContent::Image(png_bytes) => {
@@ -179,7 +190,12 @@ async fn run_server(
                                             } else {
                                                 println!("✅ Immagine incollata!");
                                                 if config_ref.notifications_enabled {
-                                                    let _ = Notification::new().summary("RustClip").body("🖼️ Immagine ricevuta").show();
+                                                    if let Some(tx) = tx_ref {
+                                                        let _ = tx.send(CoreEvent::Notify { 
+                                                            title: "RustClip".into(), 
+                                                            body: "🖼️ Immagine ricevuta".into() 
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
@@ -210,18 +226,30 @@ async fn broadcast(
     hashes.lock().unwrap().insert(hash);
     let raw = match bincode::serialize(&content) { Ok(r) => r, Err(_) => return };
     let enc = match crypto.encrypt(&raw) { Ok(e) => e, Err(_) => return };
+    
+    // Iteriamo sulla PeerMap (key=device_id, value=PeerInfo)
     for item in peers.iter() {
-        let addr = *item.value();
+        let peer_info = item.value().clone();
+        let device_id = item.key().clone();
+        
+        let addr = peer_info.ip;
         let data = enc.clone();
-        let name = item.key().clone();
+        
+        let peers_ref = peers.clone(); 
+        
         tokio::spawn(async move {
-            // FIX: Ora send_data è definita qui sotto
-            if let Err(_) = send_data(addr, data).await {} else { println!("🚀 Sent to {}", name); }
+            // Se fallisce l'invio, rimuoviamo il peer
+            if let Err(_) = send_data(addr, data).await { 
+                println!("⚠️ Connessione fallita verso {} ({}). Rimozione peer.", peer_info.name, device_id);
+                // Rimozione immediata per evitare timeout successivi
+                peers_ref.remove(&device_id);
+            } else { 
+                println!("🚀 Sent to {}", peer_info.name); 
+            }
         });
     }
 }
 
-// FIX: Ecco la funzione che mancava
 async fn send_data(addr: std::net::SocketAddr, data: Vec<u8>) -> Result<()> {
     let mut stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
     let len = data.len() as u32;
@@ -230,7 +258,7 @@ async fn send_data(addr: std::net::SocketAddr, data: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn encode_raw(w: usize, h: usize, bytes: Vec<u8>) -> Vec<u8> {
+pub fn encode_raw(w: usize, h: usize, bytes: Vec<u8>) -> Vec<u8> {
     let mut v = Vec::with_capacity(16 + bytes.len());
     v.extend_from_slice(&w.to_be_bytes());
     v.extend_from_slice(&h.to_be_bytes());
@@ -238,7 +266,7 @@ fn encode_raw(w: usize, h: usize, bytes: Vec<u8>) -> Vec<u8> {
     v
 }
 
-fn decode_raw(v: Vec<u8>) -> (usize, usize, Vec<u8>) {
+pub fn decode_raw(v: Vec<u8>) -> (usize, usize, Vec<u8>) {
     let (w_bytes, rest) = v.split_at(8);
     let (h_bytes, pixels) = rest.split_at(8);
     let w = usize::from_be_bytes(w_bytes.try_into().unwrap());
@@ -246,14 +274,14 @@ fn decode_raw(v: Vec<u8>) -> (usize, usize, Vec<u8>) {
     (w, h, pixels.to_vec())
 }
 
-fn encode_to_png(width: usize, height: usize, raw: &[u8]) -> Result<Vec<u8>> {
+pub fn encode_to_png(width: usize, height: usize, raw: &[u8]) -> Result<Vec<u8>> {
     let mut png_buffer = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_buffer);
     encoder.write_image(raw, width as u32, height as u32, image::ColorType::Rgba8)?;
     Ok(png_buffer)
 }
 
-fn hash_data(data: &[u8]) -> String {
+pub fn hash_data(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())

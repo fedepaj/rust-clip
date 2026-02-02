@@ -18,11 +18,22 @@ pub struct LogEntry {
 }
 
 #[derive(Debug, Clone)]
+pub struct PeerInfo {
+    pub name: String,
+    pub ip: SocketAddr,
+    pub device_id: String,
+    pub last_seen: std::time::SystemTime,
+}
+
+#[derive(Debug, Clone)]
 pub enum CoreEvent {
     Log(LogEntry),
-    #[allow(dead_code)] PeersUpdated(Vec<(String, SocketAddr)>),
+    // Updated to transport PeerInfo instead of tuple
+    PeersUpdated(Vec<PeerInfo>),
     IdentityLoaded(RingIdentity),
     ServiceStateChanged { running: bool },
+    // Decoupled notification request
+    Notify { title: String, body: String },
 }
 
 #[derive(Debug, Clone)]

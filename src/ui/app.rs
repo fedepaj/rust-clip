@@ -1,9 +1,9 @@
 use eframe::egui;
-use crate::events::{UiCommand, CoreEvent};
+use crate::events::{UiCommand, CoreEvent, PeerInfo};
 use flume::{Sender, Receiver};
-use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
-use crate::core::config::AppConfig; // <--- Import Config
+use crate::core::config::AppConfig; 
+use notify_rust::Notification; // Notification da UI
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -16,12 +16,12 @@ pub struct RustClipApp {
     current_tab: Tab,
     logs: Vec<String>,
     is_paused: bool,
-    peers: Vec<(String, SocketAddr)>,
+    peers: Vec<PeerInfo>, // Updated from Tuple
     
     // Dati
     my_ring_id: String,
     my_mnemonic: String,
-    config: AppConfig, // <--- Configurazione locale
+    config: AppConfig, 
     
     // UI State
     join_phrase: String,
@@ -39,7 +39,7 @@ impl RustClipApp {
             peers: vec![],
             my_ring_id: "Caricamento...".into(),
             my_mnemonic: String::new(),
-            config: AppConfig::load(), // <--- Carica config all'avvio GUI
+            config: AppConfig::load(), 
             join_phrase: String::new(),
             show_mnemonic: false,
         }
@@ -55,6 +55,10 @@ impl RustClipApp {
                     self.my_mnemonic = id.mnemonic;
                 },
                 CoreEvent::ServiceStateChanged { running } => self.is_paused = !running,
+                CoreEvent::Notify { title, body } => {
+                    // Visualizza notifica nativa
+                    let _ = Notification::new().summary(&title).body(&body).show();
+                }
             }
         }
     }
@@ -103,11 +107,11 @@ impl eframe::App for RustClipApp {
                         if self.peers.is_empty() {
                             ui.label("nessun dispositivo trovato...");
                         } else {
-                            for (name, ip) in &self.peers {
+                            for peer in &self.peers {
                                 ui.horizontal(|ui| {
                                     ui.label("🖥️");
-                                    ui.label(egui::RichText::new(name).strong());
-                                    ui.label(format!("({})", ip));
+                                    ui.label(egui::RichText::new(&peer.name).strong());
+                                    ui.label(format!("({})", peer.ip));
                                 });
                             }
                         }
@@ -124,7 +128,6 @@ impl eframe::App for RustClipApp {
                     // --- NOME DISPOSITIVO ---
                     ui.horizontal(|ui| {
                         ui.label("Nome Dispositivo:");
-                        // Usiamo lost_focus per salvare solo quando l'utente ha finito di scrivere
                         if ui.text_edit_singleline(&mut self.config.device_name).lost_focus() {
                             let _ = self.tx.send(UiCommand::UpdateConfig(self.config.clone()));
                         }
@@ -137,7 +140,6 @@ impl eframe::App for RustClipApp {
                     
                     // --- AUTO START ---
                     if ui.checkbox(&mut self.config.auto_start, "Avvia all'accensione (Auto-Start)").changed() {
-                        // TODO: Implementare AutoLaunch logic se necessario
                         let _ = self.tx.send(UiCommand::UpdateConfig(self.config.clone()));
                     }
 
@@ -149,19 +151,28 @@ impl eframe::App for RustClipApp {
                     ui.label(format!("ID Pubblico: {}", self.my_ring_id));
                     ui.label("Chiave Segreta (Mnemonic):");
                     ui.group(|ui| {
-                        ui.horizontal(|ui| {
+                        // FIX: Usiamo horizontal_wrapped per evitare overflow
+                        ui.horizontal_wrapped(|ui| {
                             if self.show_mnemonic {
-                                ui.add(egui::Label::new(egui::RichText::new(&self.my_mnemonic).monospace()).wrap());
+                                ui.add(egui::Label::new(
+                                    egui::RichText::new(&self.my_mnemonic).monospace()
+                                ).wrap());
                             } else {
                                 ui.label("*************************************************");
                             }
-                            if ui.button(if self.show_mnemonic { "🙈" } else { "👁️" }).clicked() {
+                            // Button next to it might still cause issues if text is long,
+                            // but wrap should help. Better to put button below or before if very long.
+                            // Let's keep it inline but ensure wrapping works on the label.
+                        });
+                        ui.add_space(5.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(if self.show_mnemonic { "🙈 Nascondi" } else { "👁️ Mostra" }).clicked() {
                                 self.show_mnemonic = !self.show_mnemonic;
                             }
+                            if ui.button("📋 Copia Chiave").clicked() {
+                                ui.output_mut(|o| o.copied_text = self.my_mnemonic.clone());
+                            }
                         });
-                        if ui.button("📋 Copia Chiave").clicked() {
-                            ui.output_mut(|o| o.copied_text = self.my_mnemonic.clone());
-                        }
                     });
 
                     ui.add_space(20.0);

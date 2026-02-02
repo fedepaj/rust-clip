@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // NASCONDE IL TERMINALE SU WINDOWS
 
-mod core;
-mod ui;
-mod events;
+use rust_clip::core;
+use rust_clip::ui;
+use rust_clip::events;
 
 use clap::{Parser, Subcommand};
 use core::identity::RingIdentity;
@@ -66,8 +66,43 @@ fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sende
         let load_ident = || RingIdentity::load().unwrap_or_else(|_| RingIdentity::create_new().unwrap());
         let mut identity = load_ident();
 
+        // SE CLI MODE (tx_event is None), creiamo un canale locale per gestire notifiche
+        let local_rx = if tx_event.is_none() {
+            let (tx, rx) = flume::unbounded::<CoreEvent>();
+            Some(rx)
+        } else {
+            None
+        };
+        
+        // Placeholder per logica futura se serve riutilizzare il canale
+        let _ = local_rx; 
+
+        // --- REFACTOR LOGIC START ---
+        
+        let (tx_internal, rx_internal) = if let Some(tx) = tx_event.clone() {
+             (tx, None)
+        } else {
+             let (tx, rx) = flume::unbounded::<CoreEvent>();
+             (tx, Some(rx))
+        };
+
         if let Some(tx) = &tx_event {
             let _ = tx.send(CoreEvent::IdentityLoaded(identity.clone()));
+        }
+
+        // Se abbiamo un listener locale (CLI mode), avviamo handler
+        if let Some(rx) = rx_internal {
+             tokio::spawn(async move {
+                 while let Ok(event) = rx.recv_async().await {
+                     match event {
+                         CoreEvent::Notify { title, body } => {
+                             let _ = notify_rust::Notification::new().summary(&title).body(&body).show();
+                         },
+                         CoreEvent::Log(l) => println!("[{}] {}", l.timestamp, l.message),
+                         _ => {}
+                     }
+                 }
+             });
         }
 
         // --- GESTIONE TASK DINAMICI (Hot Reload) ---
@@ -93,13 +128,14 @@ fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sende
             let p_s = p.clone();
             let cfg_s = cfg.clone();
             let pz_s = pz.clone();
+            let tx_s = tx.clone(); // Passiamo TX anche qui
             sync_handle = Some(tokio::spawn(async move {
-                let _ = clipboard::start_clipboard_sync(id_s, p_s, cfg_s, pz_s).await;
+                let _ = clipboard::start_clipboard_sync(id_s, p_s, cfg_s, pz_s, tx_s).await;
             }));
         };
 
         // Primo avvio
-        restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), tx_event.clone());
+        restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), Some(tx_internal.clone()));
 
         if let Some(rx) = rx_cmd {
             while let Ok(cmd) = rx.recv_async().await {
@@ -110,7 +146,7 @@ fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sende
                         new_cfg.save().ok();
                         config = new_cfg;
                         if restart_needed {
-                            restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), tx_event.clone());
+                            restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), Some(tx_internal.clone()));
                         }
                     },
                     UiCommand::JoinRing(phrase) => {
@@ -118,13 +154,13 @@ fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sende
                             id.save().ok();
                             identity = id;
                             if let Some(tx) = &tx_event { let _ = tx.send(CoreEvent::IdentityLoaded(identity.clone())); }
-                            restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), tx_event.clone());
+                            restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), Some(tx_internal.clone()));
                         }
                     },
                     UiCommand::GenerateNewIdentity => {
                         identity = RingIdentity::create_new().unwrap();
                         if let Some(tx) = &tx_event { let _ = tx.send(CoreEvent::IdentityLoaded(identity.clone())); }
-                        restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), tx_event.clone());
+                        restart_services(identity.clone(), config.clone(), peers.clone(), paused.clone(), Some(tx_internal.clone()));
                     }
                     UiCommand::Quit => std::process::exit(0),
                 }
