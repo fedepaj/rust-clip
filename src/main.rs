@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use core::identity::RingIdentity;
 use core::{discovery, clipboard};
 use std::io::{self, Write};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}}; // <--- Atomic
 use dashmap::DashMap;
 use flume::{Sender, Receiver};
 use events::{UiCommand, CoreEvent};
@@ -25,67 +25,60 @@ enum Commands {
     New, Join, Start, Gui
 }
 
-// Entry point principale (non è async perché Egui vuole il main thread)
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
     match args.command {
-        // CLI Pura
+        // CLI (Nessuna modifica importante qui)
         Some(Commands::Start) => {
             attach_console_if_windows();
-            run_async_backend(None, None)?; // Nessun canale UI
+            run_async_backend(None, None)?;
         }
-        Some(Commands::New) => { /* (Codice CLI uguale a prima...) */ 
+        Some(Commands::New) => { /* ... */ 
             attach_console_if_windows();
             let _ = RingIdentity::create_new()?;
         }
-        Some(Commands::Join) => { /* (Codice CLI uguale a prima...) */
+        Some(Commands::Join) => { /* ... */
              attach_console_if_windows();
-             // ... logica join ...
+             // ... codice join ...
         }
         
-        // GUI MODE (Default)
+        // GUI MODE
         None | Some(Commands::Gui) => {
-            // 1. Creiamo i canali
-            let (tx_ui, rx_core) = flume::unbounded::<UiCommand>(); // UI -> Core
-            let (tx_core, rx_ui) = flume::unbounded::<CoreEvent>(); // Core -> UI
+            let (tx_ui, rx_core) = flume::unbounded::<UiCommand>(); 
+            let (tx_core, rx_ui) = flume::unbounded::<CoreEvent>(); 
 
-            // 2. Lanciamo il Backend in un thread separato
             std::thread::spawn(move || {
                 if let Err(e) = run_async_backend(Some(rx_core), Some(tx_core)) {
                     eprintln!("CRITICAL BACKEND ERROR: {}", e);
                 }
             });
 
-            // 3. Lanciamo la GUI (Blocca il main thread)
             ui::run_gui(tx_ui, rx_ui)?;
         }
     }
     Ok(())
 }
 
-// Wrapper per avviare il runtime Tokio
 fn run_async_backend(
-    rx_cmd: Option<Receiver<UiCommand>>, 
-    tx_event: Option<Sender<CoreEvent>>
+    rx_cmd: Option<Receiver<UiCommand>>, // Canale comandi (Opzionale se CLI)
+    tx_event: Option<Sender<CoreEvent>>  // Canale eventi (Opzionale se CLI)
 ) -> anyhow::Result<()> {
     
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // --- AVVIO LOGICA CORE ---
-        // TODO: Qui integreremo i canali nel prossimo step.
-        // Per ora avviamo il sync normale come prima, ma mandiamo un log di prova.
-        
+        // --- INIZIALIZZAZIONE ---
         if let Some(tx) = &tx_event {
              let _ = tx.send(CoreEvent::Log(events::LogEntry {
-                 timestamp: "00:00:00".to_string(),
-                 level: events::LogLevel::Info,
+                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                 level: events::LogLevel::Success,
                  message: "Backend Avviato!".to_string()
              }));
         }
 
-        // Caricamento Identità
         core::firewall::ensure_open_port();
+        
+        // Carica identità
         let identity = match RingIdentity::load() {
             Ok(id) => {
                 if let Some(tx) = &tx_event {
@@ -96,25 +89,104 @@ fn run_async_backend(
             Err(_) => {
                 if let Some(tx) = &tx_event {
                     let _ = tx.send(CoreEvent::Log(events::LogEntry {
-                        timestamp: "".to_string(), level: events::LogLevel::Error,
-                        message: "Nessuna identità trovata! Vai nelle impostazioni.".to_string()
+                        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                        level: events::LogLevel::Warn,
+                        message: "Nessuna identità! Crea o unisciti a un Ring.".to_string()
                     }));
                 }
-                // Rimaniamo vivi per permettere alla GUI di fare "New Ring"
-                loop { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
+                // Se non c'è identità, creiamo un placeholder vuoto per permettere al loop comandi di girare
+                // In una versione avanzata gestiremo il restart completo.
+                // Per ora: Crash gentile o attesa comandi.
+                // Creiamo una identità temporanea per non crashare, ma avvisiamo.
+                RingIdentity::create_new()? 
             }
         };
 
+        // Stato Condiviso
         let peers: discovery::PeerMap = Arc::new(DashMap::new());
+        let paused = Arc::new(AtomicBool::new(false)); // False = Attivo
 
-        // Avvio moduli
+        // --- AVVIO SERVIZI ---
         let d_id = identity.clone();
         let d_peers = peers.clone();
+        let d_tx = tx_event.clone();
+        
+        // Discovery Task
         std::thread::spawn(move || {
-            let _ = discovery::start_lan_discovery(d_id, d_peers);
+            let _ = discovery::start_lan_discovery(d_id, d_peers, d_tx);
         });
 
-        clipboard::start_clipboard_sync(identity, peers).await
+        // Clipboard Task
+        let c_id = identity.clone();
+        let c_peers = peers.clone();
+        let c_pause = paused.clone();
+        tokio::spawn(async move {
+            let _ = clipboard::start_clipboard_sync(c_id, c_peers, c_pause).await;
+        });
+
+        // --- LOOP GESTIONE COMANDI (Controller) ---
+        // Se siamo in GUI mode, ascoltiamo i comandi. Se CLI, aspettiamo all'infinito.
+        if let Some(rx) = rx_cmd {
+            while let Ok(cmd) = rx.recv_async().await {
+                match cmd {
+                    UiCommand::SetPaused(state) => {
+                        paused.store(state, Ordering::Relaxed);
+                        let msg = if state { "Sincronizzazione PAUSA" } else { "Sincronizzazione ATTIVA" };
+                        if let Some(tx) = &tx_event {
+                            let _ = tx.send(CoreEvent::ServiceStateChanged { running: !state });
+                            let _ = tx.send(CoreEvent::Log(events::LogEntry {
+                                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                                level: events::LogLevel::Info,
+                                message: msg.to_string()
+                            }));
+                        }
+                    },
+                    UiCommand::GenerateNewIdentity => {
+                        // TODO: Implementare hot-reload (complesso).
+                        // Per ora: Creiamo, salviamo e chiediamo riavvio.
+                        let _ = RingIdentity::create_new();
+                        if let Some(tx) = &tx_event {
+                             let _ = tx.send(CoreEvent::Log(events::LogEntry {
+                                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                                level: events::LogLevel::Success,
+                                message: "Nuova identità creata! RIAVVIA L'APP.".to_string()
+                            }));
+                        }
+                    },
+                    UiCommand::JoinRing(phrase) => {
+                        match RingIdentity::from_mnemonic(&phrase) {
+                            Ok(id) => {
+                                let _ = id.save();
+                                if let Some(tx) = &tx_event {
+                                     let _ = tx.send(CoreEvent::Log(events::LogEntry {
+                                        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                                        level: events::LogLevel::Success,
+                                        message: "Join effettuato! RIAVVIA L'APP.".to_string()
+                                    }));
+                                }
+                            },
+                            Err(e) => {
+                                if let Some(tx) = &tx_event {
+                                     let _ = tx.send(CoreEvent::Log(events::LogEntry {
+                                        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                                        level: events::LogLevel::Error,
+                                        message: format!("Errore Join: {}", e)
+                                    }));
+                                }
+                            }
+                        }
+                    },
+                    UiCommand::Quit => {
+                        std::process::exit(0);
+                    }
+                }
+            }
+        } else {
+            // CLI Mode: Keep alive forever
+            loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
+        }
+
+        Ok(())
     })
 }
 

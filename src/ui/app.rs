@@ -1,56 +1,51 @@
 use eframe::egui;
-use crate::events::{UiCommand, CoreEvent};
+use crate::events::{UiCommand, CoreEvent, LogEntry};
 use flume::{Sender, Receiver};
+use std::net::SocketAddr;
 
 #[derive(PartialEq)]
-enum Tab {
-    Dashboard,
-    Settings,
-}
+enum Tab { Dashboard, Settings }
 
 pub struct RustClipApp {
-    tx_to_core: Sender<UiCommand>,
-    rx_from_core: Receiver<CoreEvent>,
+    tx: Sender<UiCommand>,
+    rx: Receiver<CoreEvent>,
     
     current_tab: Tab,
     logs: Vec<String>,
     is_paused: bool,
+    peers: Vec<(String, SocketAddr)>, // Lista locale per la GUI
     
-    // Mettiamo #[allow(dead_code)] temporaneamente finché non implementiamo la UI completa
-    #[allow(dead_code)]
-    show_mnemonic: bool,
+    // Form Inputs
     my_ring_id: String,
+    join_phrase: String,
+    show_mnemonic_window: bool,
 }
 
 impl RustClipApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> Self {
         Self {
-            tx_to_core: tx,
-            rx_from_core: rx,
+            tx, rx,
             current_tab: Tab::Dashboard,
-            logs: vec![String::from("App avviata. In attesa del Core...")],
+            logs: vec![],
             is_paused: false,
-            show_mnemonic: false,
-            my_ring_id: String::from("Caricamento..."),
+            peers: vec![],
+            my_ring_id: "Caricamento...".into(),
+            join_phrase: String::new(),
+            show_mnemonic_window: false,
         }
     }
 
-    fn handle_backend_events(&mut self) {
-        while let Ok(event) = self.rx_from_core.try_recv() {
+    fn update_state(&mut self) {
+        while let Ok(event) = self.rx.try_recv() {
             match event {
                 CoreEvent::Log(entry) => {
-                    let icon = match entry.level {
-                        crate::events::LogLevel::Info => "ℹ️",
-                        crate::events::LogLevel::Success => "✅",
-                        crate::events::LogLevel::Warn => "⚠️",
-                        crate::events::LogLevel::Error => "❌",
-                    };
-                    self.logs.push(format!("{} {} - {}", entry.timestamp, icon, entry.message));
-                    if self.logs.len() > 50 { self.logs.remove(0); }
+                    self.logs.push(format!("[{}] {}", entry.timestamp, entry.message));
                 }
-                CoreEvent::PeersUpdated(_peers) => {}
+                CoreEvent::PeersUpdated(list) => {
+                    self.peers = list;
+                }
                 CoreEvent::IdentityLoaded(id) => {
-                    self.my_ring_id = id.discovery_id; 
+                    self.my_ring_id = id.discovery_id;
                 }
                 CoreEvent::ServiceStateChanged { running } => {
                     self.is_paused = !running;
@@ -62,7 +57,7 @@ impl RustClipApp {
 
 impl eframe::App for RustClipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.handle_backend_events();
+        self.update_state();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // HEADER
@@ -70,9 +65,9 @@ impl eframe::App for RustClipApp {
                 ui.heading("RustClip 🦀");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.is_paused {
-                        ui.label(egui::RichText::new("PAUSA").color(egui::Color32::RED));
+                        ui.label(egui::RichText::new("🔴 PAUSA").strong().color(egui::Color32::RED));
                     } else {
-                        ui.label(egui::RichText::new("ATTIVO").color(egui::Color32::GREEN));
+                        ui.label(egui::RichText::new("🟢 ATTIVO").strong().color(egui::Color32::GREEN));
                     }
                 });
             });
@@ -80,50 +75,80 @@ impl eframe::App for RustClipApp {
 
             // TABS
             ui.horizontal(|ui| {
-                if ui.selectable_label(self.current_tab == Tab::Dashboard, "📊 Dashboard").clicked() {
-                    self.current_tab = Tab::Dashboard;
-                }
-                if ui.selectable_label(self.current_tab == Tab::Settings, "⚙️ Impostazioni").clicked() {
-                    self.current_tab = Tab::Settings;
-                }
+                if ui.selectable_label(self.current_tab == Tab::Dashboard, "📊 Dashboard").clicked() { self.current_tab = Tab::Dashboard; }
+                if ui.selectable_label(self.current_tab == Tab::Settings, "⚙️ Impostazioni").clicked() { self.current_tab = Tab::Settings; }
             });
             ui.separator();
 
-            // CONTENUTO
+            // BODY
             match self.current_tab {
                 Tab::Dashboard => {
-                    ui.label("Dispositivi connessi:");
-                    ui.indent("peers", |ui| {
-                        ui.label("🖥️ (In attesa di peer...)"); 
-                    });
-                    
-                    ui.add_space(20.0);
-                    
-                    if ui.button(if self.is_paused { "▶️ RIPRENDI SYNC" } else { "⏸️ METTI IN PAUSA" }).clicked() {
-                        self.is_paused = !self.is_paused;
-                        let _ = self.tx_to_core.send(UiCommand::SetPaused(self.is_paused));
+                    // PAUSE BUTTON
+                    let btn_text = if self.is_paused { "▶️ RIPRENDI SINCRONIZZAZIONE" } else { "⏸️ METTI IN PAUSA" };
+                    if ui.add(egui::Button::new(btn_text).min_size(egui::vec2(0.0, 30.0))).clicked() {
+                        let _ = self.tx.send(UiCommand::SetPaused(!self.is_paused));
                     }
                     
-                    ui.add_space(20.0);
+                    ui.add_space(15.0);
+                    
+                    // PEER LIST
+                    ui.label(egui::RichText::new("Dispositivi Connessi:").strong());
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        if self.peers.is_empty() {
+                            ui.label("nessun dispositivo trovato...");
+                        } else {
+                            for (name, ip) in &self.peers {
+                                ui.horizontal(|ui| {
+                                    ui.label("🖥️");
+                                    ui.label(egui::RichText::new(name).strong());
+                                    ui.label(format!("({})", ip));
+                                });
+                            }
+                        }
+                    });
+
+                    ui.add_space(15.0);
+
+                    // LOGS
                     ui.label("Log Eventi:");
-                    egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(150.0).stick_to_bottom(true).show(ui, |ui| {
                         for log in &self.logs {
-                            ui.label(log);
+                            ui.monospace(log);
                         }
                     });
                 },
                 Tab::Settings => {
-                    ui.label(format!("Il tuo ID Pubblico: {}", self.my_ring_id));
-                    ui.add_space(10.0);
+                    ui.heading("Gestione Ring");
+                    ui.label(format!("ID Pubblico: {}", self.my_ring_id));
                     
-                    if ui.button("🚪 Esci e Chiudi Applicazione").clicked() {
-                        let _ = self.tx_to_core.send(UiCommand::Quit);
-                        std::process::exit(0);
+                    ui.add_space(20.0);
+                    ui.separator();
+                    
+                    ui.label(egui::RichText::new("Unisciti a un altro Ring").strong());
+                    ui.text_edit_multiline(&mut self.join_phrase);
+                    if ui.button("🔗 Unisciti (Join Ring)").clicked() {
+                        if !self.join_phrase.is_empty() {
+                            let _ = self.tx.send(UiCommand::JoinRing(self.join_phrase.clone()));
+                            self.join_phrase.clear();
+                        }
+                    }
+
+                    ui.add_space(20.0);
+                    ui.separator();
+
+                    ui.label(egui::RichText::new("Zona Pericolo").strong().color(egui::Color32::RED));
+                    if ui.button("⚠️ Genera Nuova Identità").clicked() {
+                        let _ = self.tx.send(UiCommand::GenerateNewIdentity);
+                    }
+                    
+                    ui.add_space(20.0);
+                    if ui.button("🚪 Esci (Quit)").clicked() {
+                        let _ = self.tx.send(UiCommand::Quit);
                     }
                 }
             }
         });
         
-        ctx.request_repaint();
+        ctx.request_repaint(); // Refresh continuo per animazioni/log fluidi
     }
 }

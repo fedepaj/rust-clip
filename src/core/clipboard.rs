@@ -23,12 +23,16 @@ enum ClipContent {
 
 type RecentHashes = Arc<Mutex<HashSet<String>>>;
 
-pub async fn start_clipboard_sync(identity: RingIdentity, peers: PeerMap) -> Result<()> {
+pub async fn start_clipboard_sync(
+    identity: RingIdentity, 
+    peers: PeerMap,
+    global_pause: Arc<AtomicBool> // <--- NUOVO PARAMETRO
+) -> Result<()> {
     let crypto = Arc::new(CryptoLayer::new(&identity.shared_secret));
     let recent_hashes: RecentHashes = Arc::new(Mutex::new(HashSet::new()));
     let busy_writing = Arc::new(AtomicBool::new(false));
 
-    // SERVER (Receiver)
+    // SERVER
     let server_crypto = crypto.clone();
     let server_hashes = recent_hashes.clone();
     let server_busy = busy_writing.clone();
@@ -39,8 +43,8 @@ pub async fn start_clipboard_sync(identity: RingIdentity, peers: PeerMap) -> Res
         }
     });
 
-    // MONITOR (Sender)
-    run_monitor(crypto, peers, recent_hashes, busy_writing).await
+    // MONITOR (Passiamo anche global_pause)
+    run_monitor(crypto, peers, recent_hashes, busy_writing, global_pause).await
 }
 
 // --- SENDER ---
@@ -48,8 +52,9 @@ async fn run_monitor(
     crypto: Arc<CryptoLayer>, 
     peers: PeerMap, 
     recent_hashes: RecentHashes,
-    busy_writing: Arc<AtomicBool>
-) -> Result<()> {
+    busy_writing: Arc<AtomicBool>,
+    global_pause: Arc<AtomicBool> // <--- NUOVO
+) -> Result<()>  {
     println!("📋 Monitor Clipboard Attivo...");
     
     let mut last_text_hash = String::new();
@@ -58,7 +63,13 @@ async fn run_monitor(
     loop {
         sleep(Duration::from_millis(500)).await;
 
-        // 1. CONTROLLO SEMAFORO
+        // 0. CONTROLLO PAUSA GLOBALE (GUI)
+        if global_pause.load(Ordering::Relaxed) {
+            // Se siamo in pausa, saltiamo tutto il ciclo
+            continue; 
+        }
+
+        // 1. CONTROLLO SEMAFORO (Scrittura in corso)
         if busy_writing.load(Ordering::Relaxed) {
             continue;
         }
