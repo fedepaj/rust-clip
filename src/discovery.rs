@@ -8,10 +8,12 @@ use rand::Rng;
 const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
 
 pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
-    println!("🌍 Avvio Discovery LAN (mDNS)...");
+    println!("🌍 Avvio Discovery LAN (Secure Mode)...");
 
-    let my_ring_id = identity.get_ring_id_hex().trim().to_string();
-    
+    // --- FIX: Usiamo il campo pubblico derivato da HKDF ---
+    let my_discovery_id = identity.discovery_id.clone();
+    // -----------------------------------------------------
+
     let mut rng = rand::thread_rng();
     let device_id: u16 = rng.gen(); 
     
@@ -21,7 +23,7 @@ pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
     let ip = "0.0.0.0"; 
     let port = 5000;    
 
-    let properties = [("version", "1.0"), ("ring_id", &my_ring_id)];
+    let properties = [("version", "1.0"), ("ring_id", &my_discovery_id)];
 
     let service_info = ServiceInfo::new(
         SERVICE_TYPE,
@@ -34,8 +36,8 @@ pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
 
     mdns.register(service_info)?;
     
-    println!("📢 Io sono: '{}'", instance_name);
-    println!("🔐 Il mio Ring ID: '{}'", my_ring_id);
+    println!("📢 Annuncio attivo: '{}'", instance_name);
+    println!("🔐 Secure ID (Public): '{}'", my_discovery_id);
     println!("👀 In ascolto sulla rete WiFi...\n");
 
     let receiver = mdns.browse(SERVICE_TYPE)?;
@@ -52,39 +54,24 @@ pub fn start_lan_discovery(identity: RingIdentity) -> Result<()> {
 
                     let props = info.get_properties();
                     
-                    if let Some(other_ring_id_prop) = props.get("ring_id") {
-                        let raw_str = other_ring_id_prop.to_string();
-                        
-                        // --- FIX DEFINITIVO ---
-                        // 1. Rimuoviamo virgolette e spazi
+                    if let Some(other_prop) = props.get("ring_id") {
+                        let raw_str = other_prop.to_string();
+                        // Pulizia stringa
                         let mut clean_id = raw_str.trim().replace("\"", "");
-
-                        // 2. Se la stringa inizia con "ring_id=", lo togliamo
                         if clean_id.starts_with("ring_id=") {
                             clean_id = clean_id.replace("ring_id=", "");
                         }
 
-                        if clean_id == my_ring_id {
+                        if clean_id == my_discovery_id {
                             let addrs = info.get_addresses();
                             let ip_str = if !addrs.is_empty() {
-                                addrs.iter()
-                                     .map(|ip| ip.to_string())
-                                     .collect::<Vec<_>>()
-                                     .join(", ")
-                            } else {
-                                "IP Sconosciuto".to_string()
-                            };
+                                addrs.iter().map(|ip| ip.to_string()).collect::<Vec<_>>().join(", ")
+                            } else { "Unknown".to_string() };
 
                             println!("🚀 🔗 TROVATO DISPOSITIVO DEL RING! 🔗 🚀");
-                            println!("   Nome Device: {}", found_fullname);
-                            println!("   IP Address:  {}", ip_str);
-                            println!("   Port:        {}", info.get_port());
+                            println!("   Nome: {}", found_fullname);
+                            println!("   IP:   {}", ip_str);
                             println!("-------------------------------------------");
-                        } else {
-                            // Se fallisce ancora, vediamo perché nel log
-                             println!("🔍 DEBUG MISMATCH:");
-                             println!("   Mio ID:   '{}'", my_ring_id);
-                             println!("   Ricevuto: '{}'", clean_id);
                         }
                     }
                 }

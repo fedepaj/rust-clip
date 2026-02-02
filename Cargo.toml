@@ -4,23 +4,28 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Async Runtime
+# Async & System
 tokio = { version = "1.32", features = ["full"] }
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+local-ip-address = "0.5"
 
-# Crypto & Auth
-bip39 = "2.0"
-sha2 = "0.10"
+# Crypto Core
 rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12" # Key Derivation Function (lo standard per derivare chiavi)
+aes-gcm = "0.10" # Cifratura simmetrica autenticata (per il file e per la rete)
+bip39 = "2.0"
 hex = "0.4"
+base64 = "0.21"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# CLI & Utils
-anyhow = "1.0"
-clap = { version = "4.4", features = ["derive"] }
-
-# NETWORKING (Il nuovo motore)
+# Networking
 mdns-sd = "0.10"
-local-ip-address = "0.5"
+
+# Machine ID (Per l'obfuscation)
+machine-uid = "0.5"
