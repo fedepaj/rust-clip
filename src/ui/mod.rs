@@ -52,13 +52,22 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                 // Usiamo il percorso completo per evitare warning sugli import
                 while let Ok(event) = tray_icon::menu::MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        println!("Tray: Restore requested"); // DEBUG
+                        println!("Tray: Restore requested - Sending Visible(true)");
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        
+                        println!("Tray: Sending Minimized(false)");
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        
+                        println!("Tray: Sending Focus");
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        // FIX: Force to top then normal to grab focus on Windows
+                        
+                        println!("Tray: Sending AlwaysOnTop");
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                        
+                        println!("Tray: Sending Normal Level");
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                        
+                        println!("Tray: Requesting Repaint");
                         ctx_t.request_repaint();
                     } else if event.id == quit_id {
                         let _ = tx_t.send(UiCommand::Quit);
