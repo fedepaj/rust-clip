@@ -42,6 +42,14 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
             let ctx = cc.egui_ctx.clone();
             configure_fonts(&ctx);
             
+            // --- NATIVE WINDOW HANDLE EXTRACTION (Windows only) ---
+            #[cfg(target_os = "windows")]
+            let hwnd = if let Ok(w_handle) = cc.window_handle() {
+                if let winit::raw_window_handle::RawWindowHandle::Win32(handle) = w_handle.as_raw() {
+                    handle.hwnd.get() as isize
+                } else { 0 }
+            } else { 0 };
+
             let show_id = tray.menu_item_show.id().clone();
             let quit_id = tray.menu_item_quit.id().clone();
             let tx_t = tx.clone();
@@ -52,26 +60,23 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                 // Usiamo il percorso completo per evitare warning sugli import
                 while let Ok(event) = tray_icon::menu::MenuEvent::receiver().recv() {
                     if event.id == show_id {
-                        println!("Tray: Restore requested"); 
+                        println!("Tray: Restore requested (Native)"); 
                         
-                        // FIX: Change order and add delays to help Windows process commands
-                        // 1. Ensure not minimized
-                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        
-                        // 2. Make visible
+                        #[cfg(target_os = "windows")]
+                        unsafe {
+                            use windows::Win32::Foundation::HWND;
+                            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SetForegroundWindow, SW_RESTORE};
+                            if hwnd != 0 {
+                                let h = HWND(hwnd as *mut _);
+                                ShowWindow(h, SW_RESTORE);
+                                SetForegroundWindow(h);
+                            }
+                        }
+
+                        // Fallback/standard methods for other OS + Refresh
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        
-                        // 3. Focus
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        
-                        // 4. Force Top/Normal dance
-                        ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        ctx_t.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-                        
                         ctx_t.request_repaint();
                     } else if event.id == quit_id {
                         let _ = tx_t.send(UiCommand::Quit);

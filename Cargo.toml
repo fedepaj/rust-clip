@@ -61,7 +61,11 @@ auto-launch = "0.5"   # Per l'avvio al login
 hostname = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation"] }
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging"
+] }
 
 [package.metadata.bundle]
 name = "RustClip"
