@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, Duration};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering}; // <--- NUOVO
+use std::sync::atomic::{AtomicBool, Ordering};
 use sha2::{Sha256, Digest};
 use std::collections::HashSet;
 use std::borrow::Cow;
@@ -27,13 +27,13 @@ pub async fn start_clipboard_sync(identity: RingIdentity, peers: PeerMap) -> Res
     let crypto = Arc::new(CryptoLayer::new(&identity.shared_secret));
     let recent_hashes: RecentHashes = Arc::new(Mutex::new(HashSet::new()));
 
-    // SEMAFORO: Se true, il Monitor smette di leggere per lasciare spazio al Server
+    // SEMAFORO: Protegge la clipboard durante la scrittura
     let busy_writing = Arc::new(AtomicBool::new(false));
 
     // SERVER (Receiver)
     let server_crypto = crypto.clone();
     let server_hashes = recent_hashes.clone();
-    let server_busy = busy_writing.clone(); // Clone per il server
+    let server_busy = busy_writing.clone();
     
     tokio::spawn(async move {
         if let Err(e) = run_server(server_crypto, server_hashes, server_busy).await {
@@ -50,123 +50,131 @@ async fn run_monitor(
     crypto: Arc<CryptoLayer>, 
     peers: PeerMap, 
     recent_hashes: RecentHashes,
-    busy_writing: Arc<AtomicBool> // <--- Flag passato qui
+    busy_writing: Arc<AtomicBool>
 ) -> Result<()> {
     println!("📋 Monitor Clipboard Attivo...");
     
-    // Inizializziamo la clipboard fuori dal loop per mantenerne il contesto (se possibile)
-    // Su Windows arboard consiglia di ricrearla spesso se ci sono errori, ma proviamo a tenerla.
+    // FIX: Creiamo l'istanza UNA volta sola fuori dal loop
+    // Se fallisce qui, riproviamo a crearla dentro (fallback), ma cerchiamo di mantenerla viva.
+    let mut clipboard = Clipboard::new().map_err(|e| anyhow::anyhow!("Clip init fail: {}", e))?;
+    
     let mut last_text_hash = String::new();
     let mut last_image_hash = String::new();
 
     loop {
         // 1. CONTROLLO SEMAFORO
-        // Se il server sta scrivendo, noi saltiamo questo turno per non disturbare Windows
+        // Se il server sta scrivendo, aspettiamo e non tocchiamo la clipboard
         if busy_writing.load(Ordering::Relaxed) {
             sleep(Duration::from_millis(200)).await;
             continue;
         }
 
-        // Creiamo istanza fresca per evitare lock "stale" su Windows
-        match Clipboard::new() {
-            Ok(mut clipboard) => {
-                let mut content_to_send: Option<ClipContent> = None;
-                let mut content_hash = String::new();
-                let mut has_text = false;
+        let mut content_to_send: Option<ClipContent> = None;
+        let mut content_hash = String::new();
+        let mut has_text = false;
 
-                // 2. CONTROLLO TESTO
-                match clipboard.get_text() {
-                    Ok(text) => {
-                        has_text = true;
-                        let hash = hash_data(text.as_bytes());
-                        if hash != last_text_hash && !text.is_empty() {
-                            let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
-                            if !is_from_network {
-                                println!("📝 Copia rilevata: Testo ({:.20}...) - Hash: {:.8}", text, hash);
-                                content_to_send = Some(ClipContent::Text(text));
-                                content_hash = hash.clone();
-                                last_text_hash = hash;
-                                last_image_hash.clear();
-                            } else {
-                                last_text_hash = hash;
-                            }
-                        }
-                    },
-                    Err(_) => { has_text = false; }
+        // 2. CONTROLLO TESTO
+        match clipboard.get_text() {
+            Ok(text) => {
+                has_text = true;
+                let hash = hash_data(text.as_bytes());
+                if hash != last_text_hash && !text.is_empty() {
+                    let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
+                    if !is_from_network {
+                        println!("📝 Copia rilevata: Testo ({:.20}...) - Hash: {:.8}", text, hash);
+                        content_to_send = Some(ClipContent::Text(text));
+                        content_hash = hash.clone();
+                        last_text_hash = hash;
+                        last_image_hash.clear();
+                    } else {
+                        last_text_hash = hash;
+                    }
                 }
+            },
+            Err(_) => { has_text = false; }
+        }
 
-                // 3. CONTROLLO IMMAGINE
-                if content_to_send.is_none() {
-                    // Nota: get_image su Windows può essere lento, facciamolo solo se non c'è testo
-                    match clipboard.get_image() {
-                        Ok(img) => {
-                            let hash = hash_data(&img.bytes);
-                            if hash != last_image_hash {
-                                let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
-                                if !is_from_network {
-                                    println!("🖼️  Copia rilevata: Immagine {}x{} - Hash: {:.8}", img.width, img.height, hash);
-                                    
-                                    // Spostiamo i dati necessari per il thread blocking
-                                    let width = img.width;
-                                    let height = img.height;
-                                    let bytes = img.bytes.into_owned();
+        // 3. CONTROLLO IMMAGINE
+        // Se c'è testo, spesso le API clipboard danno errore sulle immagini o viceversa.
+        // Controlliamo l'immagine solo se non abbiamo appena trovato testo nuovo.
+        if content_to_send.is_none() {
+            match clipboard.get_image() {
+                Ok(img) => {
+                    // Nota: Hashare i pixel raw è veloce in RAM
+                    let hash = hash_data(&img.bytes);
 
-                                    let png_result = tokio::task::spawn_blocking(move || {
-                                        encode_to_png(width, height, &bytes)
-                                    }).await?;
+                    if hash != last_image_hash {
+                        let is_from_network = { recent_hashes.lock().unwrap().contains(&hash) };
+                        
+                        if !is_from_network {
+                            println!("🖼️  Copia rilevata: Immagine {}x{} - Hash: {:.8}", img.width, img.height, hash);
+                            
+                            let width = img.width;
+                            let height = img.height;
+                            let bytes = img.bytes.into_owned();
 
-                                    match png_result {
-                                        Ok(png_bytes) => {
-                                            println!("   Compresso PNG: {} bytes", png_bytes.len());
-                                            content_to_send = Some(ClipContent::Image(png_bytes));
-                                            content_hash = hash.clone();
-                                            last_image_hash = hash;
-                                            last_text_hash.clear();
-                                        },
-                                        Err(e) => eprintln!("❌ Err Compressione: {}", e),
-                                    }
-                                } else {
+                            // Compressione in thread separato
+                            let png_result = tokio::task::spawn_blocking(move || {
+                                encode_to_png(width, height, &bytes)
+                            }).await?;
+
+                            match png_result {
+                                Ok(png_bytes) => {
+                                    println!("   Compressione OK: {} bytes. Invio...", png_bytes.len());
+                                    content_to_send = Some(ClipContent::Image(png_bytes));
+                                    content_hash = hash.clone();
                                     last_image_hash = hash;
-                                }
+                                    last_text_hash.clear();
+                                },
+                                Err(e) => eprintln!("❌ Errore compressione PNG: {}", e),
                             }
-                        },
-                        Err(e) => {
-                            // Ignoriamo errori standard (clipboard vuota)
-                            let msg = format!("{}", e);
-                            if !msg.contains("empty") && !msg.contains("not available") && !has_text {
-                                // Solo log molto verbose, commentabile
-                                // eprintln!("Debug Img: {}", msg);
-                            }
+                        } else {
+                            last_image_hash = hash;
                         }
                     }
-                }
-
-                // 4. INVIO
-                if let Some(content) = content_to_send {
-                    {
-                        let mut set = recent_hashes.lock().unwrap();
-                        set.insert(content_hash);
+                },
+                Err(e) => {
+                    // Debug leggero: stampiamo errore solo se non è "empty" e se non c'era testo
+                    // (perché se c'è testo, è normale che get_image fallisca)
+                    let msg = format!("{}", e);
+                    if !msg.contains("empty") && !msg.contains("not available") && !has_text {
+                        // eprintln!("Debug Img: {}", msg); 
+                        // Se l'errore è persistente, potremmo dover ricreare la clipboard, 
+                        // ma per ora proviamo a fidarci dell'istanza persistente.
                     }
-                    if let Ok(raw) = bincode::serialize(&content) {
-                        if let Ok(enc) = crypto.encrypt(&raw) {
+                }
+            }
+        }
+
+        // 4. INVIO (Se abbiamo trovato qualcosa)
+        if let Some(content) = content_to_send {
+            // Aggiungiamo ai recenti SUBITO per evitare loop se torna indietro velocemente
+            {
+                let mut set = recent_hashes.lock().unwrap();
+                set.insert(content_hash);
+            }
+
+            match bincode::serialize(&content) {
+                Ok(raw_bytes) => {
+                     match crypto.encrypt(&raw_bytes) {
+                        Ok(encrypted_bytes) => {
                             for item in peers.iter() {
                                 let addr = *item.value();
-                                let data = enc.clone();
+                                let data = encrypted_bytes.clone();
                                 let name = item.key().clone();
                                 tokio::spawn(async move {
                                     if let Err(_) = send_data(addr, data).await {
-                                        // Silent fail
+                                        eprintln!("⚠️  Invio fallito a {}", name);
                                     } else {
                                         println!("🚀 Inviato a {}", name);
                                     }
                                 });
                             }
-                        }
-                    }
-                }
-            },
-            Err(_) => {
-                // Errore apertura clipboard (magari lockata da altra app), riproviamo dopo
+                        },
+                        Err(e) => eprintln!("❌ Errore Cifratura: {}", e),
+                     }
+                },
+                Err(e) => eprintln!("❌ Errore Serializzazione: {}", e),
             }
         }
 
@@ -177,6 +185,7 @@ async fn run_monitor(
 async fn send_data(addr: std::net::SocketAddr, data: Vec<u8>) -> Result<()> {
     let stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(addr)).await??;
     let mut stream = stream;
+    
     let len = data.len() as u32;
     stream.write_all(&len.to_be_bytes()).await?;
     stream.write_all(&data).await?;
@@ -187,7 +196,7 @@ async fn send_data(addr: std::net::SocketAddr, data: Vec<u8>) -> Result<()> {
 async fn run_server(
     crypto: Arc<CryptoLayer>, 
     recent_hashes: RecentHashes,
-    busy_writing: Arc<AtomicBool> // <--- Flag ricevuto qui
+    busy_writing: Arc<AtomicBool>
 ) -> Result<()> {
     let listener = TcpListener::bind("0.0.0.0:5566").await?;
     
@@ -201,6 +210,7 @@ async fn run_server(
             let mut len_buf = [0u8; 4];
             if socket.read_exact(&mut len_buf).await.is_err() { return; }
             let len = u32::from_be_bytes(len_buf) as usize;
+
             if len > MAX_PACKET_SIZE { return; }
 
             let mut buf = vec![0u8; len];
@@ -209,13 +219,12 @@ async fn run_server(
             if let Ok(decrypted) = crypto_ref.decrypt(&buf) {
                 if let Ok(content) = bincode::deserialize::<ClipContent>(&decrypted) {
                     
-                    // ALZIAMO IL SEMAFORO: "Sto scrivendo, Monitor stai fermo!"
+                    // ALZIAMO IL SEMAFORO
                     busy_ref.store(true, Ordering::Relaxed);
                     
-                    // Facciamo tutto in un thread blocking per non bloccare il runtime async
                     let _ = tokio::task::spawn_blocking(move || {
-                        // Piccola pausa per assicurarsi che il Monitor abbia finito il suo ciclo corrente
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        // Pausa di sicurezza per far finire il ciclo corrente del Monitor
+                        std::thread::sleep(std::time::Duration::from_millis(100));
 
                         match Clipboard::new() {
                             Ok(mut cb) => {
@@ -234,7 +243,6 @@ async fn run_server(
                                             let height = image.height() as usize;
                                             let raw_bytes = image.to_rgba8().into_raw();
                                             
-                                            // Aggiorna hash
                                             let hash = hash_data(&raw_bytes);
                                             hashes_ref.lock().unwrap().insert(hash);
 
@@ -244,9 +252,8 @@ async fn run_server(
                                                 bytes: Cow::from(raw_bytes),
                                             };
                                             
-                                            // SCRITTURA CRITICA
                                             if let Err(e) = cb.set_image(img_data) {
-                                                eprintln!("❌ Errore SetClipboard: {}", e);
+                                                eprintln!("❌ Errore Scrittura Clip: {}", e);
                                             } else {
                                                 println!("✅ Immagine impostata!");
                                             }
@@ -254,10 +261,10 @@ async fn run_server(
                                     }
                                 }
                             },
-                            Err(e) => eprintln!("❌ Errore Apertura Clip per Scrittura: {}", e),
+                            Err(e) => eprintln!("❌ Errore Apertura Clip (Server): {}", e),
                         }
                         
-                        // Manteniamo il blocco ancora per un po' per lasciare che Windows processi i dati
+                        // Manteniamo il blocco ancora un po'
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         
                         // ABBASSIAMO IL SEMAFORO
@@ -270,7 +277,6 @@ async fn run_server(
     }
 }
 
-// --- UTILS ---
 fn encode_to_png(width: usize, height: usize, raw: &[u8]) -> Result<Vec<u8>> {
     let mut png_buffer = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_buffer);
