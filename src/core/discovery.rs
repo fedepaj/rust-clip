@@ -1,11 +1,11 @@
 use crate::core::identity::RingIdentity;
+use crate::core::config::AppConfig; // <--- Import Config
 use crate::events::CoreEvent;
 use flume::Sender;
 use anyhow::Result;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::thread;
 use std::time::Duration;
-// Rimosso rand::Rng perché usiamo l'ID deterministico
 use std::sync::Arc;
 use dashmap::DashMap;
 use std::net::SocketAddr;
@@ -18,20 +18,26 @@ pub type PeerMap = Arc<DashMap<String, SocketAddr>>;
 pub fn start_lan_discovery(
     identity: RingIdentity, 
     peers: PeerMap, 
+    config: AppConfig, // <--- Parametro Config
     tx_event: Option<Sender<CoreEvent>>
 ) -> Result<()> {
-    println!("🌍 Avvio Discovery LAN (Secure Mode)...");
+    println!("🌍 Avvio Discovery LAN...");
 
     let my_discovery_id = identity.discovery_id.clone();
-    
-    // Otteniamo l'ID stabile (che è già una String esadecimale, es. "a5f1")
-    let device_id = RingIdentity::get_derived_device_id();
-    
     let mdns = ServiceDaemon::new()?;
 
-    // CORREZIONE QUI SOTTO:
-    // Usiamo "{}" invece di "{:04x}" perché è già una stringa
-    let instance_name = format!("RustClip-{}", device_id);
+    // --- COSTRUZIONE NOME CUSTOM ---
+    // Puliamo il nome scelto dall'utente per renderlo compatibile con mDNS
+    let safe_name: String = config.device_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    
+    // Aggiungiamo suffisso hardware per unicità
+    let device_suffix = RingIdentity::get_derived_device_id();
+    let instance_name = format!("{}-{}", safe_name, device_suffix);
+    // -------------------------------
+
     let ip = "0.0.0.0"; 
     
     let properties = [("version", "1.0"), ("ring_id", &my_discovery_id)];
@@ -49,10 +55,8 @@ pub fn start_lan_discovery(
     
     println!("📢 Annuncio attivo: '{}'", instance_name);
     
-    // (Il resto del file rimane identico...)
     let receiver = mdns.browse(SERVICE_TYPE)?;
 
-    // Helper per inviare aggiornamenti alla GUI
     let send_update = |peers_map: &PeerMap| {
         if let Some(tx) = &tx_event {
             let list: Vec<(String, SocketAddr)> = peers_map
@@ -68,28 +72,22 @@ pub fn start_lan_discovery(
             match event {
                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
                     let found_fullname = info.get_fullname();
-                    
                     if found_fullname.contains(&instance_name) { continue; }
 
                     let props = info.get_properties();
                     if let Some(other_prop) = props.get("ring_id") {
                         let raw_str = other_prop.to_string();
                         let mut clean_id = raw_str.trim().replace("\"", "");
-                        if clean_id.starts_with("ring_id=") {
-                            clean_id = clean_id.replace("ring_id=", "");
-                        }
+                        if clean_id.starts_with("ring_id=") { clean_id = clean_id.replace("ring_id=", ""); }
 
                         if clean_id == my_discovery_id {
-                            // Cerchiamo IPv4
                             let mut target_addr: Option<SocketAddr> = None;
-                            
                             for ip in info.get_addresses() {
                                 if ip.is_ipv4() {
                                     target_addr = Some(SocketAddr::new(*ip, info.get_port()));
                                     break; 
                                 }
                             }
-
                             if target_addr.is_none() {
                                 if let Some(ip) = info.get_addresses().iter().next() {
                                      target_addr = Some(SocketAddr::new(*ip, info.get_port()));

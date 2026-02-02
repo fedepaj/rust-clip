@@ -3,6 +3,7 @@ use crate::events::{UiCommand, CoreEvent};
 use flume::{Sender, Receiver};
 use std::net::SocketAddr;
 use crate::ui::tray::AppTray;
+use crate::core::config::AppConfig; // <--- Import Config
 
 #[derive(PartialEq)]
 enum Tab { Dashboard, Settings }
@@ -17,13 +18,14 @@ pub struct RustClipApp {
     is_paused: bool,
     peers: Vec<(String, SocketAddr)>,
     
-    // Dati Identità
+    // Dati
     my_ring_id: String,
-    my_mnemonic: String, // <--- NUOVO: Salviamo le parole qui
+    my_mnemonic: String,
+    config: AppConfig, // <--- Configurazione locale
     
     // UI State
     join_phrase: String,
-    show_mnemonic: bool, // <--- NUOVO: Toggle per mostrare/nascondere
+    show_mnemonic: bool,
 }
 
 impl RustClipApp {
@@ -37,6 +39,7 @@ impl RustClipApp {
             peers: vec![],
             my_ring_id: "Caricamento...".into(),
             my_mnemonic: String::new(),
+            config: AppConfig::load(), // <--- Carica config all'avvio GUI
             join_phrase: String::new(),
             show_mnemonic: false,
         }
@@ -47,11 +50,9 @@ impl RustClipApp {
             match event {
                 CoreEvent::Log(entry) => self.logs.push(format!("[{}] {}", entry.timestamp, entry.message)),
                 CoreEvent::PeersUpdated(list) => self.peers = list,
-                
-                // Quando arriva l'identità, salviamo anche il mnemonic
                 CoreEvent::IdentityLoaded(id) => {
                     self.my_ring_id = id.discovery_id;
-                    self.my_mnemonic = id.mnemonic; // <--- SALVIAMO QUI
+                    self.my_mnemonic = id.mnemonic;
                 },
                 CoreEvent::ServiceStateChanged { running } => self.is_paused = !running,
             }
@@ -91,18 +92,20 @@ impl eframe::App for RustClipApp {
 
             match self.current_tab {
                 Tab::Dashboard => {
-                    // (Codice Dashboard identico a prima...)
                     let btn_text = if self.is_paused { "▶️ RIPRENDI SYNC" } else { "⏸️ METTI IN PAUSA" };
                     if ui.add(egui::Button::new(btn_text).min_size(egui::vec2(0.0, 30.0))).clicked() {
                         let _ = self.tx.send(UiCommand::SetPaused(!self.is_paused));
                     }
+                    
                     ui.add_space(15.0);
                     ui.label(egui::RichText::new("Dispositivi Connessi:").strong());
                     egui::Frame::group(ui.style()).show(ui, |ui| {
-                        if self.peers.is_empty() { ui.label("nessun dispositivo trovato..."); } else {
+                        if self.peers.is_empty() {
+                            ui.label("nessun dispositivo trovato...");
+                        } else {
                             for (name, ip) in &self.peers {
                                 ui.horizontal(|ui| {
-                                    ui.label("🖥️"); // Con il fix font dovrebbe vedersi meglio
+                                    ui.label("🖥️");
                                     ui.label(egui::RichText::new(name).strong());
                                     ui.label(format!("({})", ip));
                                 });
@@ -116,39 +119,50 @@ impl eframe::App for RustClipApp {
                     });
                 },
                 Tab::Settings => {
-                    ui.heading("Le tue Credenziali");
-                    ui.label(format!("ID Pubblico: {}", self.my_ring_id));
+                    ui.heading("Preferenze");
                     
+                    // --- NOME DISPOSITIVO ---
+                    ui.horizontal(|ui| {
+                        ui.label("Nome Dispositivo:");
+                        // Usiamo lost_focus per salvare solo quando l'utente ha finito di scrivere
+                        if ui.text_edit_singleline(&mut self.config.device_name).lost_focus() {
+                            let _ = self.tx.send(UiCommand::UpdateConfig(self.config.clone()));
+                        }
+                    });
+                    
+                    // --- NOTIFICHE ---
+                    if ui.checkbox(&mut self.config.notifications_enabled, "Abilita Notifiche").changed() {
+                        let _ = self.tx.send(UiCommand::UpdateConfig(self.config.clone()));
+                    }
+                    
+                    // --- AUTO START ---
+                    if ui.checkbox(&mut self.config.auto_start, "Avvia all'accensione (Auto-Start)").changed() {
+                        // TODO: Implementare AutoLaunch logic se necessario
+                        let _ = self.tx.send(UiCommand::UpdateConfig(self.config.clone()));
+                    }
+
+                    ui.separator();
                     ui.add_space(10.0);
-                    
-                    // --- SEZIONE SEGRETISSIMA ---
+
+                    // --- CHIAVE SEGRETA ---
+                    ui.label(egui::RichText::new("Credenziali").strong());
+                    ui.label(format!("ID Pubblico: {}", self.my_ring_id));
                     ui.label("Chiave Segreta (Mnemonic):");
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             if self.show_mnemonic {
-                                // FIX: Usiamo un Label con wrapping abilitato e font monospaziato
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&self.my_mnemonic).monospace()
-                                    ).wrap()
-                                );
+                                ui.add(egui::Label::new(egui::RichText::new(&self.my_mnemonic).monospace()).wrap());
                             } else {
-                                // Mostra asterischi (questo va bene su una riga)
                                 ui.label("*************************************************");
                             }
-                            
-                            // Tasto Occhio
                             if ui.button(if self.show_mnemonic { "🙈" } else { "👁️" }).clicked() {
                                 self.show_mnemonic = !self.show_mnemonic;
                             }
                         });
-                        
-                        // Tasto Copia
                         if ui.button("📋 Copia Chiave").clicked() {
                             ui.output_mut(|o| o.copied_text = self.my_mnemonic.clone());
                         }
                     });
-                    // ----------------------------
 
                     ui.add_space(20.0);
                     ui.separator();

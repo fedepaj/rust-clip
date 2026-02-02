@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use crate::core::identity::RingIdentity;
+use crate::core::config::AppConfig;
 
 #[derive(Debug, Clone)]
 pub enum LogLevel {
@@ -27,7 +28,8 @@ pub enum CoreEvent {
 #[derive(Debug, Clone)]
 pub enum UiCommand {
     SetPaused(bool),
-    #[allow(dead_code)] GenerateNewIdentity,
+    UpdateConfig(AppConfig), // <--- NUOVO: Salva nuova config
     #[allow(dead_code)] JoinRing(String),
+    #[allow(dead_code)] GenerateNewIdentity,
     Quit,
 }

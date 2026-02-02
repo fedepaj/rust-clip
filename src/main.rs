@@ -4,9 +4,9 @@ mod events;
 
 use clap::{Parser, Subcommand};
 use core::identity::RingIdentity;
+use core::config::AppConfig; // <--- Import Config
 use core::{discovery, clipboard};
-use std::io::{self, Write};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}}; // <--- Atomic
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use dashmap::DashMap;
 use flume::{Sender, Receiver};
 use events::{UiCommand, CoreEvent};
@@ -29,21 +29,26 @@ fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
     match args.command {
-        // CLI (Nessuna modifica importante qui)
         Some(Commands::Start) => {
             attach_console_if_windows();
             run_async_backend(None, None)?;
         }
-        Some(Commands::New) => { /* ... */ 
+        Some(Commands::New) => { 
             attach_console_if_windows();
             let _ = RingIdentity::create_new()?;
         }
-        Some(Commands::Join) => { /* ... */
+        Some(Commands::Join) => {
              attach_console_if_windows();
-             // ... codice join ...
+             print!("Inserisci le parole del ring: ");
+             use std::io::{self, Write};
+             io::stdout().flush()?;
+             let mut phrase = String::new();
+             io::stdin().read_line(&mut phrase)?;
+             match RingIdentity::from_mnemonic(phrase.trim()) {
+                 Ok(id) => { id.save()?; println!("✅ Salvato."); }
+                 Err(e) => println!("❌ Errore: {}", e),
+             }
         }
-        
-        // GUI MODE
         None | Some(Commands::Gui) => {
             let (tx_ui, rx_core) = flume::unbounded::<UiCommand>(); 
             let (tx_core, rx_ui) = flume::unbounded::<CoreEvent>(); 
@@ -61,13 +66,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_async_backend(
-    rx_cmd: Option<Receiver<UiCommand>>, // Canale comandi (Opzionale se CLI)
-    tx_event: Option<Sender<CoreEvent>>  // Canale eventi (Opzionale se CLI)
+    rx_cmd: Option<Receiver<UiCommand>>, 
+    tx_event: Option<Sender<CoreEvent>>  
 ) -> anyhow::Result<()> {
     
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // --- INIZIALIZZAZIONE ---
         if let Some(tx) = &tx_event {
              let _ = tx.send(CoreEvent::Log(events::LogEntry {
                  timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -78,6 +82,9 @@ fn run_async_backend(
 
         core::firewall::ensure_open_port();
         
+        // 1. CARICA CONFIGURAZIONE
+        let mut config = AppConfig::load(); // <--- LOAD
+
         // Carica identità
         let identity = match RingIdentity::load() {
             Ok(id) => {
@@ -94,38 +101,33 @@ fn run_async_backend(
                         message: "Nessuna identità! Crea o unisciti a un Ring.".to_string()
                     }));
                 }
-                // Se non c'è identità, creiamo un placeholder vuoto per permettere al loop comandi di girare
-                // In una versione avanzata gestiremo il restart completo.
-                // Per ora: Crash gentile o attesa comandi.
-                // Creiamo una identità temporanea per non crashare, ma avvisiamo.
                 RingIdentity::create_new()? 
             }
         };
 
-        // Stato Condiviso
         let peers: discovery::PeerMap = Arc::new(DashMap::new());
-        let paused = Arc::new(AtomicBool::new(false)); // False = Attivo
+        let paused = Arc::new(AtomicBool::new(false)); 
 
-        // --- AVVIO SERVIZI ---
+        // --- AVVIO SERVIZI CON CONFIG ---
         let d_id = identity.clone();
         let d_peers = peers.clone();
         let d_tx = tx_event.clone();
+        let d_config = config.clone(); // Clone config per discovery
         
-        // Discovery Task
         std::thread::spawn(move || {
-            let _ = discovery::start_lan_discovery(d_id, d_peers, d_tx);
+            let _ = discovery::start_lan_discovery(d_id, d_peers, d_config, d_tx);
         });
 
-        // Clipboard Task
         let c_id = identity.clone();
         let c_peers = peers.clone();
         let c_pause = paused.clone();
+        let c_config = config.clone(); // Clone config per clipboard
+        
         tokio::spawn(async move {
-            let _ = clipboard::start_clipboard_sync(c_id, c_peers, c_pause).await;
+            let _ = clipboard::start_clipboard_sync(c_id, c_peers, c_config, c_pause).await;
         });
 
-        // --- LOOP GESTIONE COMANDI (Controller) ---
-        // Se siamo in GUI mode, ascoltiamo i comandi. Se CLI, aspettiamo all'infinito.
+        // --- LOOP COMANDI ---
         if let Some(rx) = rx_cmd {
             while let Ok(cmd) = rx.recv_async().await {
                 match cmd {
@@ -141,15 +143,27 @@ fn run_async_backend(
                             }));
                         }
                     },
+                    UiCommand::UpdateConfig(new_config) => { // <--- GESTIONE SALVATAGGIO
+                        if let Err(e) = new_config.save() {
+                            eprintln!("Errore salvataggio config: {}", e);
+                        } else {
+                            if let Some(tx) = &tx_event {
+                                let _ = tx.send(CoreEvent::Log(events::LogEntry {
+                                    timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                                    level: events::LogLevel::Info,
+                                    message: "Configurazione salvata (alcune modifiche richiedono riavvio)".to_string()
+                                }));
+                            }
+                        }
+                        config = new_config; 
+                    },
                     UiCommand::GenerateNewIdentity => {
-                        // TODO: Implementare hot-reload (complesso).
-                        // Per ora: Creiamo, salviamo e chiediamo riavvio.
                         let _ = RingIdentity::create_new();
                         if let Some(tx) = &tx_event {
                              let _ = tx.send(CoreEvent::Log(events::LogEntry {
                                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                                 level: events::LogLevel::Success,
-                                message: "Nuova identità creata! RIAVVIA L'APP.".to_string()
+                                message: "Nuova identità! RIAVVIA L'APP.".to_string()
                             }));
                         }
                     },
@@ -161,7 +175,7 @@ fn run_async_backend(
                                      let _ = tx.send(CoreEvent::Log(events::LogEntry {
                                         timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                                         level: events::LogLevel::Success,
-                                        message: "Join effettuato! RIAVVIA L'APP.".to_string()
+                                        message: "Join OK! RIAVVIA L'APP.".to_string()
                                     }));
                                 }
                             },
@@ -182,7 +196,6 @@ fn run_async_backend(
                 }
             }
         } else {
-            // CLI Mode: Keep alive forever
             loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
         }
 
