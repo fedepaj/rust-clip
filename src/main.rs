@@ -140,7 +140,12 @@ fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sende
         if let Some(rx) = rx_cmd {
             while let Ok(cmd) = rx.recv_async().await {
                 match cmd {
-                    UiCommand::SetPaused(p) => paused.store(p, Ordering::Relaxed),
+                    UiCommand::SetPaused(p) => {
+                        paused.store(p, Ordering::Relaxed);
+                        if let Some(tx) = &tx_event {
+                            let _ = tx.send(CoreEvent::ServiceStateChanged { running: !p });
+                        }
+                    },
                     UiCommand::UpdateConfig(new_cfg) => {
                         let restart_needed = new_cfg.device_name != config.device_name;
                         new_cfg.save().ok();

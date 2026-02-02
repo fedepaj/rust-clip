@@ -66,8 +66,29 @@ async fn run_monitor(
         let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new("📋 Monitor Clipboard Attivo...")));
     }
     
+    // --- FIX STARTUP SYNC: Pre-fill hashes with current content ---
     let mut last_text_hash = String::new();
     let mut last_image_hash = String::new();
+
+    // Leggiamo lo stato attuale SENZA inviarlo
+    if let Ok(mut cb) = Clipboard::new() {
+        if let Ok(text) = cb.get_text() {
+             if !text.is_empty() {
+                 let h = hash_data(text.as_bytes());
+                 recent_hashes.lock().unwrap().insert(h.clone());
+                 last_text_hash = h;
+                 println!("Startup: Ignorata testo in clipboard ({})", last_text_hash);
+             }
+        }
+        if let Ok(img) = cb.get_image() {
+             let raw = img.bytes.clone().into_owned(); // clone necessario perché get_image torna Cow/ImageData
+             let h = hash_data(&raw);
+             recent_hashes.lock().unwrap().insert(h.clone());
+             last_image_hash = h;
+             println!("Startup: Ignorata immagine in clipboard ({})", last_image_hash);
+        }
+    }
+    // ---------------------------------------------------------------
 
     loop {
         sleep(Duration::from_millis(500)).await;

@@ -26,6 +26,7 @@ pub struct RustClipApp {
     // UI State
     join_phrase: String,
     show_mnemonic: bool,
+    show_confirmation: bool, // NUOVO
 }
 
 impl RustClipApp {
@@ -42,6 +43,7 @@ impl RustClipApp {
             config: AppConfig::load(), 
             join_phrase: String::new(),
             show_mnemonic: false,
+            show_confirmation: false,
         }
     }
 
@@ -191,8 +193,24 @@ impl eframe::App for RustClipApp {
                     ui.separator();
 
                     ui.label(egui::RichText::new("Zona Pericolo").strong().color(egui::Color32::RED));
-                    if ui.button("⚠️ Genera Nuova Identità").clicked() {
-                        let _ = self.tx.send(UiCommand::GenerateNewIdentity);
+                    
+                    if self.show_confirmation {
+                        ui.label(egui::RichText::new("⚠️ SEI SICURO?").heading().color(egui::Color32::RED));
+                        ui.label("Generando una nuova identità perderai l'accesso al Ring attuale permanentemente se non hai salvato la chiave.");
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button(egui::RichText::new("Sì, procedi").color(egui::Color32::RED)).clicked() {
+                                let _ = self.tx.send(UiCommand::GenerateNewIdentity);
+                                self.show_confirmation = false;
+                            }
+                            if ui.button("Annulla").clicked() {
+                                self.show_confirmation = false;
+                            }
+                        });
+                    } else {
+                        if ui.button("⚠️ Genera Nuova Identità").clicked() {
+                            self.show_confirmation = true;
+                        }
                     }
                     
                     ui.add_space(20.0);

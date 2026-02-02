@@ -52,8 +52,9 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
                 // Usiamo il percorso completo per evitare warning sugli import
                 while let Ok(event) = tray_icon::menu::MenuEvent::receiver().recv() {
                     if event.id == show_id {
+                        println!("Tray: Restore requested"); // DEBUG
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false)); // FIX: Ripristina se minimizzato
+                        ctx_t.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx_t.send_viewport_cmd(egui::ViewportCommand::Focus);
                         ctx_t.request_repaint();
                     } else if event.id == quit_id {
