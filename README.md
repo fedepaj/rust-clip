@@ -153,7 +153,7 @@ If you prefer to build from source, follow these steps:
 
 ---
 
-## �🚀 Getting Started
+## 🚀 Getting Started
 
 1.  **Installation**: Download the binary or compile with `cargo build --release`.
 2.  **First Run**: The app will generate a new Ring Identity.
