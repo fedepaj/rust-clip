@@ -106,7 +106,7 @@ RustClip can also be run in "headless" mode for servers or advanced users.
 
 ---
 
-## � Build & Installation
+## 🛠️ Build & Installation
 
 Ready-to-use executables for Windows, macOS, and Linux are generally available in the **GitHub Releases** section.
 
