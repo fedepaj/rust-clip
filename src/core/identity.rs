@@ -114,7 +114,7 @@ impl RingIdentity {
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = cipher.encrypt(nonce, json.as_bytes())
-            .map_err(|_| anyhow!("Errore cifratura file"))?;
+            .map_err(|_| anyhow!("File encryption error"))?;
 
         let mut file_content = Vec::new();
         file_content.extend_from_slice(&nonce_bytes);

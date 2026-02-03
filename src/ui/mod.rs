@@ -9,13 +9,19 @@ use std::fs;
 use std::sync::Arc;
 use image::GenericImageView; // Importante per usare .dimensions()
 
+use crate::core::config::AppConfig;
+
 pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result<()> {
+    // Carichiamo la config per settare la lingua della Tray
+    let config = AppConfig::load();
+    rust_i18n::set_locale(&config.language);
+
     let tray = tray::AppTray::new()?;
     
     // --- CARICAMENTO ICONA PER FINESTRA ---
     let icon_bytes = include_bytes!("../../assets/icon.png");
     let image = image::load_from_memory(icon_bytes)
-        .map_err(|e| anyhow::anyhow!("Errore decodifica icona: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Icon decode error: {}", e))?;
     
     // FIX: Usiamo il metodo sull'oggetto 'image'
     let (width, height) = image.dimensions();
@@ -92,7 +98,7 @@ pub fn run_gui(tx: Sender<UiCommand>, rx: Receiver<CoreEvent>) -> anyhow::Result
 
             Ok(Box::new(app::RustClipApp::new(cc, tx, rx, tray)))
         }),
-    ).map_err(|e| anyhow::anyhow!("Errore GUI: {}", e))
+    ).map_err(|e| anyhow::anyhow!("GUI error: {}", e))
 }
 
 fn configure_fonts(ctx: &egui::Context) {

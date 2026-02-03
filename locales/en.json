@@ -1,0 +1,61 @@
+{
+  "app": {
+    "title": "RustClip 🦀",
+    "paused": "🔴 PAUSED",
+    "active": "🟢 ACTIVE"
+  },
+  "dashboard": {
+    "tab": "📊 Dashboard",
+    "resume_sync": "▶️ RESUME SYNC",
+    "pause_sync": "⏸️ PAUSE SYNC",
+    "connected_devices": "Connected Devices:",
+    "no_devices": "no devices found...",
+    "logs": "Event Logs:"
+  },
+  "settings": {
+    "tab": "⚙️ Settings",
+    "title": "Preferences",
+    "device_name": "Device Name:",
+    "enable_notifications": "Enable Notifications",
+    "auto_start": "Start on Login (Auto-Start)",
+    "language": "Language / Lingua:",
+    "credentials": "Credentials",
+    "public_id": "Public ID:",
+    "secret_key": "Secret Key (Mnemonic):",
+    "hide_key": "🙈 Hide",
+    "show_key": "👁️ Show",
+    "copy_key": "📋 Copy Key",
+    "join_ring": "Join another Ring",
+    "join_btn": "🔗 Join Ring",
+    "danger_zone": "Danger Zone",
+    "generate_id": "⚠️ Generate New Identity",
+    "confirm_title": "⚠️ ARE YOU SURE?",
+    "confirm_msg": "Generating a new identity will permanently lose access to the current Ring if you haven't saved the key.",
+    "confirm_yes": "Yes, proceed",
+    "confirm_cancel": "Cancel",
+    "quit": "🚪 Quit"
+  },
+  "tray": {
+    "show": "Open Dashboard",
+    "quit": "Quit"
+  },
+  "logs": {
+    "monitor_active": "📋 Clipboard Monitor Active...",
+    "startup_ignore_text": "Startup: Ignored clipboard text (%{hash})",
+    "startup_ignore_image": "Startup: Ignored clipboard image (%{hash})",
+    "text_detected": "📝 Text detected -> Sending...",
+    "image_detected": "🖼️  Image detected -> Compressing and Sending...",
+    "sent_to": "🚀 Sent to %{name}",
+    "conn_failed": "⚠️ Connection failed to %{name} (%{id}). Removing peer.",
+    "rx_text": "📩 RX Text: %{text}...",
+    "rx_image": "📩 RX Image (%{size} b)",
+    "img_pasted": "✅ Image pasted!",
+    "err_write_clip": "❌ Err Write Clip: %{err}",
+    "err_open_clip": "❌ Err Open Clip Server: %{err}"
+  },
+  "notify": {
+    "title": "RustClip",
+    "body_text": "📋 Text copied",
+    "body_image": "🖼️ Image received"
+  }
+}

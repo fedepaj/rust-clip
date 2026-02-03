@@ -13,8 +13,8 @@ impl AppTray {
     pub fn new() -> Result<Self> {
         let tray_menu = Menu::new();
         
-        let menu_item_show = MenuItem::new("Apri Dashboard", true, None);
-        let menu_item_quit = MenuItem::new("Esci (Quit)", true, None);
+        let menu_item_show = MenuItem::new(t!("tray.show"), true, None);
+        let menu_item_quit = MenuItem::new(t!("tray.quit"), true, None);
 
         // Costruiamo il menu
         tray_menu.append(&menu_item_show)?;
@@ -46,11 +46,11 @@ fn load_icon() -> Result<tray_icon::Icon> {
 
     // Decodifichiamo il PNG/ICO dalla memoria
     let image = image::load_from_memory(icon_bytes)
-        .map_err(|e| anyhow::anyhow!("Errore decodifica icona: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Icon decode error: {}", e))?;
     
     let (width, height) = image.dimensions();
     let rgba = image.to_rgba8().into_raw();
 
     tray_icon::Icon::from_rgba(rgba, width, height)
-        .map_err(|e| anyhow::anyhow!("Errore creazione tray icon: {}", e))
+        .map_err(|e| anyhow::anyhow!("Tray icon creation error: {}", e))
 }

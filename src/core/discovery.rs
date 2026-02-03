@@ -21,7 +21,7 @@ pub fn start_lan_discovery(
     config: AppConfig, 
     tx_event: Option<Sender<CoreEvent>>
 ) -> Result<()> {
-    println!("🌍 Avvio Discovery LAN...");
+    println!("🌍 Starting LAN Discovery...");
 
     let my_discovery_id = identity.discovery_id.clone();
     let my_device_id = RingIdentity::get_derived_device_id();
@@ -54,7 +54,7 @@ pub fn start_lan_discovery(
 
     mdns.register(service_info)?;
     
-    println!("📢 Annuncio attivo: '{}' (ID: {})", instance_name, my_device_id);
+    println!("📢 Announcement active: '{}' (ID: {})", instance_name, my_device_id);
     
     let receiver = mdns.browse(SERVICE_TYPE)?;
 
@@ -130,7 +130,7 @@ pub fn start_lan_discovery(
                                 } else {
                                     peers.insert(peer_device_id.clone(), peer_info);
                                     changed = true;
-                                    let msg = format!("➕ Peer Aggiunto: {} ({}) -> {}", device_name, peer_device_id, addr);
+                                    let msg = format!("➕ Peer Added: {} ({}) -> {}", device_name, peer_device_id, addr);
                                     println!("{}", msg);
                                     if let Some(tx) = &tx_event {
                                         let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&msg)));

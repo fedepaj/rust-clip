@@ -45,7 +45,7 @@ impl CryptoLayer {
 
         // 3. Cifra
         let ciphertext = self.cipher.encrypt(nonce, payload_bytes.as_slice())
-            .map_err(|e| anyhow!("Errore cifratura: {}", e))?;
+            .map_err(|e| anyhow!("Encryption error: {}", e))?;
 
         // 4. Concatena [Nonce + Ciphertext]
         let mut final_packet = Vec::with_capacity(24 + ciphertext.len());

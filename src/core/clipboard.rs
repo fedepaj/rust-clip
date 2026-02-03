@@ -46,7 +46,7 @@ pub async fn start_clipboard_sync(
     
     tokio::spawn(async move {
         if let Err(e) = run_server(server_crypto, server_hashes, server_busy, server_config, server_tx).await {
-            eprintln!("❌ Errore Server TCP: {}", e);
+            eprintln!("❌ TCP Server Error: {}", e);
         }
     });
 
@@ -61,9 +61,9 @@ async fn run_monitor(
     global_pause: Arc<AtomicBool>,
     tx_event: Option<Sender<CoreEvent>> // ADDED
 ) -> Result<()> {
-    println!("📋 Monitor Clipboard Attivo...");
+    println!("{}", t!("logs.monitor_active"));
     if let Some(ref tx) = tx_event {
-        let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new("📋 Monitor Clipboard Attivo...")));
+        let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&t!("logs.monitor_active"))));
     }
     
     // --- FIX STARTUP SYNC: Pre-fill hashes with current content ---
@@ -77,7 +77,7 @@ async fn run_monitor(
                  let h = hash_data(text.as_bytes());
                  recent_hashes.lock().unwrap().insert(h.clone());
                  last_text_hash = h;
-                 println!("Startup: Ignorata testo in clipboard ({})", last_text_hash);
+                 println!("{}", t!("logs.startup_ignore_text", hash = last_text_hash));
              }
         }
         if let Ok(img) = cb.get_image() {
@@ -85,7 +85,7 @@ async fn run_monitor(
              let h = hash_data(&raw);
              recent_hashes.lock().unwrap().insert(h.clone());
              last_image_hash = h;
-             println!("Startup: Ignorata immagine in clipboard ({})", last_image_hash);
+             println!("{}", t!("logs.startup_ignore_image", hash = last_image_hash));
         }
     }
     // ---------------------------------------------------------------
@@ -119,7 +119,7 @@ async fn run_monitor(
                     if hash != last_text_hash {
                         let is_new = { !recent_hashes.lock().unwrap().contains(&hash) };
                         if is_new {
-                            println!("📝 Testo rilevato -> Invio...");
+                            println!("{}", t!("logs.text_detected"));
                             last_text_hash = hash.clone();
                             last_image_hash.clear();
                             if let Some(c) = content_wrapper { broadcast(c, hash, &crypto, &peers, &recent_hashes, tx_event.clone()).await; }
@@ -130,7 +130,7 @@ async fn run_monitor(
                     if hash != last_image_hash {
                         let is_new = { !recent_hashes.lock().unwrap().contains(&hash) };
                         if is_new {
-                            println!("🖼️  Immagine rilevata -> Comprimo e Invio...");
+                            println!("{}", t!("logs.image_detected"));
                             if let Some(ClipContent::Image(raw_data_fake)) = content_wrapper {
                                 let (w, h, pixels) = decode_raw(raw_data_fake);
                                 let png_res = tokio::task::spawn_blocking(move || encode_to_png(w, h, &pixels)).await?;
@@ -190,19 +190,21 @@ async fn run_server(
                                     ClipContent::Text(text) => {
                                         let hash = hash_data(text.as_bytes());
                                         hashes_ref.lock().unwrap().insert(hash);
-                                        println!("📩 RX Testo: {:.20}...", text);
+                                        // Take substring for log if too long
+                                        let short_text = if text.len() > 20 { format!("{}...", &text[..20]) } else { text.clone() };
+                                        println!("{}", t!("logs.rx_text", text = short_text));
                                         let _ = cb.set_text(text);
                                         if config_ref.notifications_enabled {
                                             if let Some(tx) = tx_ref {
                                                 let _ = tx.send(CoreEvent::Notify { 
-                                                    title: "RustClip".into(), 
-                                                    body: "📋 Testo copiato".into() 
+                                                    title: t!("notify.title").to_string(), 
+                                                    body: t!("notify.body_text").to_string() 
                                                 });
                                             }
                                         }
                                     },
                                     ClipContent::Image(png_bytes) => {
-                                        println!("📩 RX Immagine ({} b)", png_bytes.len());
+                                        println!("{}", t!("logs.rx_image", size = png_bytes.len()));
                                         if let Ok(image) = image::load_from_memory(&png_bytes) {
                                             let w = image.width() as usize;
                                             let h = image.height() as usize;
@@ -211,14 +213,14 @@ async fn run_server(
                                             hashes_ref.lock().unwrap().insert(hash);
                                             let img_data = ImageData { width: w, height: h, bytes: Cow::from(raw) };
                                             if let Err(e) = cb.set_image(img_data) {
-                                                eprintln!("❌ Err Write Clip: {}", e);
+                                                eprintln!("{}", t!("logs.err_write_clip", err = e));
                                             } else {
-                                                println!("✅ Immagine incollata!");
+                                                println!("{}", t!("logs.img_pasted"));
                                                 if config_ref.notifications_enabled {
                                                     if let Some(tx) = tx_ref {
                                                         let _ = tx.send(CoreEvent::Notify { 
-                                                            title: "RustClip".into(), 
-                                                            body: "🖼️ Immagine ricevuta".into() 
+                                                            title: t!("notify.title").to_string(), 
+                                                            body: t!("notify.body_image").to_string() 
                                                         });
                                                     }
                                                 }
@@ -227,7 +229,7 @@ async fn run_server(
                                     }
                                 }
                             },
-                            Err(e) => eprintln!("❌ Err Open Clip Server: {}", e),
+                            Err(e) => eprintln!("{}", t!("logs.err_open_clip", err = e)),
                         }
                         
                         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -268,7 +270,7 @@ async fn broadcast(
         tokio::spawn(async move {
             // Se fallisce l'invio, rimuoviamo il peer
             if let Err(_) = send_data(addr, data).await { 
-                let msg = format!("⚠️ Connessione fallita verso {} ({}). Rimozione peer.", peer_info.name, device_id);
+                let msg = t!("logs.conn_failed", name = peer_info.name, id = device_id).to_string();
                 println!("{}", msg);
                 if let Some(tx) = &tx_clone {
                     let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&msg)));
@@ -276,7 +278,7 @@ async fn broadcast(
                 // Rimozione immediata per evitare timeout successivi
                 peers_ref.remove(&device_id);
             } else { 
-                let msg = format!("🚀 Sent to {}", peer_info.name);
+                let msg = t!("logs.sent_to", name = peer_info.name).to_string();
                 println!("{}", msg); 
                 if let Some(tx) = &tx_clone {
                     let _ = tx.send(CoreEvent::Log(crate::events::LogEntry::new(&msg)));

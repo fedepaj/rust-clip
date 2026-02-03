@@ -1,0 +1,61 @@
+{
+    "app": {
+        "title": "RustClip 🦀",
+        "paused": "🔴 PAUSA",
+        "active": "🟢 ATTIVO"
+    },
+    "dashboard": {
+        "tab": "📊 Dashboard",
+        "resume_sync": "▶️ RIPRENDI SYNC",
+        "pause_sync": "⏸️ METTI IN PAUSA",
+        "connected_devices": "Dispositivi Connessi:",
+        "no_devices": "nessun dispositivo trovato...",
+        "logs": "Log Eventi:"
+    },
+    "settings": {
+        "tab": "⚙️ Impostazioni",
+        "title": "Preferenze",
+        "device_name": "Nome Dispositivo:",
+        "enable_notifications": "Abilita Notifiche",
+        "auto_start": "Avvia all'accensione (Auto-Start)",
+        "language": "Lingua / Language:",
+        "credentials": "Credenziali",
+        "public_id": "ID Pubblico:",
+        "secret_key": "Chiave Segreta (Mnemonic):",
+        "hide_key": "🙈 Nascondi",
+        "show_key": "👁️ Mostra",
+        "copy_key": "📋 Copia Chiave",
+        "join_ring": "Unisciti a un altro Ring",
+        "join_btn": "🔗 Unisciti (Join Ring)",
+        "danger_zone": "Zona Pericolo",
+        "generate_id": "⚠️ Genera Nuova Identità",
+        "confirm_title": "⚠️ SEI SICURO?",
+        "confirm_msg": "Generando una nuova identità perderai l'accesso al Ring attuale permanentemente se non hai salvato la chiave.",
+        "confirm_yes": "Sì, procedi",
+        "confirm_cancel": "Annulla",
+        "quit": "🚪 Esci (Quit)"
+    },
+    "tray": {
+        "show": "Apri Dashboard",
+        "quit": "Esci (Quit)"
+    },
+    "logs": {
+        "monitor_active": "📋 Monitor Clipboard Attivo...",
+        "startup_ignore_text": "Startup: Ignorata testo in clipboard (%{hash})",
+        "startup_ignore_image": "Startup: Ignorata immagine in clipboard (%{hash})",
+        "text_detected": "📝 Testo rilevato -> Invio...",
+        "image_detected": "🖼️  Immagine rilevata -> Comprimo e Invio...",
+        "sent_to": "🚀 Inviato a %{name}",
+        "conn_failed": "⚠️ Connessione fallita verso %{name} (%{id}). Rimozione peer.",
+        "rx_text": "📩 RX Testo: %{text}...",
+        "rx_image": "📩 RX Immagine (%{size} b)",
+        "img_pasted": "✅ Immagine incollata!",
+        "err_write_clip": "❌ Err Write Clip: %{err}",
+        "err_open_clip": "❌ Err Open Clip Server: %{err}"
+    },
+    "notify": {
+        "title": "RustClip",
+        "body_text": "📋 Testo copiato",
+        "body_image": "🖼️ Immagine ricevuta"
+    }
+}

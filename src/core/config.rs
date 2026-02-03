@@ -9,6 +9,14 @@ pub struct AppConfig {
     pub device_name: String,
     pub notifications_enabled: bool,
     pub auto_start: bool,
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    // Detect system language (simple heuristic)
+    let lang = sys_locale::get_locale().unwrap_or_else(|| "en-US".into());
+    if lang.starts_with("it") { "it".to_string() } else { "en".to_string() }
 }
 
 impl Default for AppConfig {
@@ -23,6 +31,7 @@ impl Default for AppConfig {
             device_name: name,
             notifications_enabled: true,
             auto_start: false,
+            language: default_language(),
         }
     }
 }

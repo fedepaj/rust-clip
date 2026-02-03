@@ -3,6 +3,7 @@
 use rust_clip::core;
 use rust_clip::ui;
 use rust_clip::events;
+// use rust_i18n::t; // Import t! macro helper if needed via library re-export or direct dependency
 
 use clap::{Parser, Subcommand};
 use core::identity::RingIdentity;
@@ -111,7 +112,7 @@ fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sende
 
         // Macro/Closure per avviare/riavviare tutto
         let mut restart_services = |id: RingIdentity, cfg: AppConfig, p: discovery::PeerMap, pz: Arc<AtomicBool>, tx: Option<Sender<CoreEvent>>| {
-            println!("🔄 Avvio/Riavvio servizi core...");
+            println!("🔄 Starting/Restarting core services...");
             if let Some(h) = discovery_handle.take() { h.abort(); }
             if let Some(h) = sync_handle.take() { h.abort(); }
             p.clear();
