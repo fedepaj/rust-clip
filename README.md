@@ -174,7 +174,3 @@ If you prefer to build from source, follow these steps:
     *   Ensure they are on the **exact same subnet**.
     *   Verify both are using the **exact same mnemonic phrase**.
     *   Check if the status circle is 🟢 ACTIVE.
-
----
-
-*Handcrafted / Pedantic Documentation for RustClip v0.1.0*
