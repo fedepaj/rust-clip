@@ -1,4 +1,4 @@
-# RustClip 🦀
+# RustClip 📎
 
 **RustClip** is a lightweight, secure, and fast clipboard synchronization tool written in Rust. It allows you to seamlessly copy text or images on one device and paste them on another within the same local network (LAN), prioritizing speed and privacy.
 
