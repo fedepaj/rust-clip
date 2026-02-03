@@ -57,6 +57,13 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sender<CoreEvent>>) -> anyhow::Result<()> {
+    // macOS Notification Setup
+    #[cfg(target_os = "macos")]
+    {
+        // This MUST match the bundle identifier in Cargo.toml [package.metadata.bundle] or Info.plist
+        let _ = notify_rust::set_application("com.rustclip.app");
+    }
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let mut config = AppConfig::load();
