@@ -29,7 +29,41 @@ fn main() -> anyhow::Result<()> {
     }
 
     match args.command {
-        Some(Commands::Start) => run_async_backend(None, None)?,
+        Some(Commands::Start) | None => {
+            // 1. Load Identity on Main Thread (Safe)
+            let load_ident = || RingIdentity::load().unwrap_or_else(|_| RingIdentity::create_new().unwrap());
+            let identity = load_ident();
+
+            println!("✅ Phase 1 Identity Verification");
+            println!("------------------------------");
+            println!("Mnemonic: [HIDDEN]");
+            println!("Rotating ID: {}", identity.get_rotating_id());
+            println!("Ed25519 PubKey: {:?}", hex::encode(identity.public_key.as_bytes()));
+            println!("------------------------------");
+
+            // 2. Clone Identity for Backend
+            let id_backend = identity.clone();
+
+            // 3. Spawn Tokio Backend in Background Thread
+            std::thread::spawn(move || {
+                run_async_backend(id_backend, None, None).expect("Backend Crashed");
+            });
+
+            // 4. Main Thread Platform Specifics
+            #[cfg(target_os = "macos")]
+            {
+                // BLOCKING CALL: Runs NSRunLoop forever
+                use rust_clip::transport::ble::macos::run_ble_runloop;
+                run_ble_runloop(identity)?;
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                // On Windows/Linux, just park or join.
+                // Since we don't have a main loop here yet (Tray is not active), we park.
+                loop { std::thread::park(); }
+            }
+        },
         Some(Commands::New) => { let _ = RingIdentity::create_new()?; }
         Some(Commands::Join) => {
              print!("Inserisci le parole del ring: ");
@@ -40,40 +74,30 @@ fn main() -> anyhow::Result<()> {
              let id = RingIdentity::from_mnemonic(phrase.trim())?;
              id.save()?;
         }
-        None | Some(Commands::Gui) => {
-            // UI disabled for Phase 1 verification to avoid dependencies on legacy events
-            // We just run the backend logic to verify Identity
-            println!("Phase 1 Verification: Running Backend Logic only (GUI Temporarily Disabled)");
-            run_async_backend(None, None)?;
+        Some(Commands::Gui) => {
+            println!("GUI not implemented in Phase 1/2 Refactor");
         }
     }
     Ok(())
 }
 
-fn run_async_backend(rx_cmd: Option<Receiver<UiCommand>>, tx_event: Option<Sender<CoreEvent>>) -> anyhow::Result<()> {
+fn run_async_backend(identity: RingIdentity, _rx_cmd: Option<Receiver<UiCommand>>, _tx_event: Option<Sender<CoreEvent>>) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let mut config = AppConfig::load();
-        let paused = Arc::new(AtomicBool::new(false));
-
-        // Helper per caricare l'identità
-        let load_ident = || RingIdentity::load().unwrap_or_else(|_| RingIdentity::create_new().unwrap());
-        let mut identity = load_ident();
-
-        println!("✅ Phase 1 Identity Verification");
-        println!("------------------------------");
-        println!("Mnemonic: [HIDDEN]");
-        println!("Rotating ID: {}", identity.get_rotating_id());
-        println!("Ed25519 PubKey: {:?}", hex::encode(identity.public_key.as_bytes()));
-        println!("------------------------------");
-
-        // --- PHASE 2: BLE START ---
+        // --- PHASE 2: BLE START (Async Part) ---
+        // On macOS, the actual BLE loop is on Main Thread.
+        // On Windows, start() does the work.
+        
         use rust_clip::transport::{Transport, ble::BleTransport};
         let ble = BleTransport::new(identity.clone());
+        
+        // This will print a warning on macOS and do nothing, which is correct now.
+        // On Windows, it starts the WinRT service.
         if let Err(e) = ble.start().await {
              println!("❌ BLE Start Failed: {}", e);
         } else {
-             println!("✅ BLE Service Initialized (macOS: Advertising 'RustClip-Mac')");
+             #[cfg(not(target_os = "macos"))]
+             println!("✅ BLE Service Initialized (Windows/Linux)");
         }
 
         println!("Waiting for peers (Phase 2+)...");
