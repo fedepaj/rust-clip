@@ -16,11 +16,12 @@ pub mod linux;
 
 pub struct BleTransport {
     identity: RingIdentity,
+    tx_packet: flume::Sender<WirePacket>,
 }
 
 impl BleTransport {
-    pub fn new(identity: RingIdentity) -> Arc<Self> {
-        Arc::new(Self { identity })
+    pub fn new(identity: RingIdentity, tx_packet: flume::Sender<WirePacket>) -> Arc<Self> {
+        Arc::new(Self { identity, tx_packet })
     }
 }
 
@@ -34,7 +35,7 @@ impl Transport for BleTransport {
 
         #[cfg(target_os = "windows")]
         {
-            return windows::start_ble_service(self.identity.clone()).await;
+            return windows::start_ble_service(self.identity.clone(), self.tx_packet.clone()).await;
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]

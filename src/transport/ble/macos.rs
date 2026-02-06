@@ -1,6 +1,8 @@
 use anyhow::Result;
 use crate::core::identity::RingIdentity;
+use crate::core::packet::WirePacket;
 use std::thread;
+use flume::Sender;
 
 use objc2::runtime::{AnyObject, ProtocolObject}; 
 use objc2::{define_class, msg_send, rc::Retained, MainThreadOnly};
@@ -20,6 +22,10 @@ const READ_CHAR_UUID:  &str = "99999999-0000-0000-0000-000000000002";
 const WRITE_CHAR_UUID: &str = "99999999-0000-0000-0000-000000000003"; 
 const LOCAL_NAME:      &str = "MacBook-Rust-Test";
 
+use std::sync::OnceLock;
+
+static CLIENT_TX: OnceLock<Sender<WirePacket>> = OnceLock::new();
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -31,7 +37,8 @@ define_class!(
         fn peripheral_manager_did_update_state(&self, manager: &CBPeripheralManager) {
             let state = unsafe { manager.state() };
             if state == CBManagerState::PoweredOn {
-                println!("🔵 [Rust] Bluetooth ACCESO. Configuro Servizi GATT...");
+                println!("🔵 [Rust] Bluetooth ACCESO. Resetting Services...");
+                unsafe { manager.removeAllServices(); } // Clean slate, unsafe required
                 self.setup_gatt_service(manager, MainThreadMarker::from(self));
             }
         }
@@ -70,13 +77,23 @@ define_class!(
                 for i in 0..requests.count() {
                     let request = requests.objectAtIndex(i);
                     if let Some(data) = request.value() {
-                        // Accesso universale ai byte tramite msg_send
                         let ptr: *const std::os::raw::c_void = msg_send![&*data, bytes];
                         let len: usize = msg_send![&*data, length];
-                        
                         let slice = std::slice::from_raw_parts(ptr.cast::<u8>(), len);
-                        if let Ok(text) = std::str::from_utf8(slice) {
-                            println!("� [CLIPBOARD RICEVUTA]: {}", text);
+                        
+                        println!("📥 [BLE-Mac] Received {} bytes via Write", len);
+                        
+                        // Parse logic
+                        if let Ok(packet) = bincode::deserialize::<WirePacket>(slice) {
+                             println!("📦 [BLE-Mac] Parsed WirePacket! Sending to backend...");
+                             if let Some(tx) = CLIENT_TX.get() {
+                                 let _ = tx.send(packet);
+                             }
+                        } else {
+                             println!("⚠️ [BLE-Mac] Failed to parse WirePacket. Raw bytes: {:?}", slice);
+                             if let Ok(text) = std::str::from_utf8(slice) {
+                                  println!("📝 [BLE-Mac] As String: {:?}", text);
+                             }
                         }
                     }
                 }
@@ -91,7 +108,10 @@ define_class!(
 );
 
 impl BleDelegate {
-    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, tx_packet: Sender<WirePacket>) -> Retained<Self> {
+        // Init global channel once
+        let _ = CLIENT_TX.set(tx_packet);
+        
         let this = mtm.alloc();
         unsafe { msg_send![this, init] }
     }
@@ -109,10 +129,11 @@ impl BleDelegate {
                 CBAttributePermissions::Readable,
             );
 
+            // Added WriteWithoutResponse to allow flexible writing from clients
             let write_char = CBMutableCharacteristic::initWithType_properties_value_permissions(
                 mtm.alloc(),
                 &CBUUID::UUIDWithString(&NSString::from_str(WRITE_CHAR_UUID)),
-                CBCharacteristicProperties::Write,
+                CBCharacteristicProperties::Write | CBCharacteristicProperties::WriteWithoutResponse,
                 None,
                 CBAttributePermissions::Writeable,
             );
@@ -123,27 +144,10 @@ impl BleDelegate {
                 Retained::cast_unchecked::<CBCharacteristic>(write_char),
             ])));
 
-            // 2. Servizio GAP (0x1800) per migliorare la stabilità del nome
-            // FIX: Usiamo UUIDWithString con "1800" e "2A00"
-            let gap_service_uuid = CBUUID::UUIDWithString(&NSString::from_str("1800"));
-            let name_char_uuid = CBUUID::UUIDWithString(&NSString::from_str("2A00"));
+            // Removed Manual GAP Service (0x1800) registration to avoid conflict/error.
+            // Core Bluetooth manages GAP automatically.
             
-            let name_data = NSString::from_str(LOCAL_NAME).dataUsingEncoding(4);
-            let name_char = CBMutableCharacteristic::initWithType_properties_value_permissions(
-                mtm.alloc(),
-                &name_char_uuid,
-                CBCharacteristicProperties::Read,
-                name_data.as_ref().map(|d| &**d),
-                CBAttributePermissions::Readable,
-            );
-            
-            let gap_service = CBMutableService::initWithType_primary(mtm.alloc(), &gap_service_uuid, true);
-            gap_service.setCharacteristics(Some(&NSArray::from_retained_slice(&[
-                Retained::cast_unchecked::<CBCharacteristic>(name_char)
-            ])));
-
-            println!("⏳ [Rust] Registrazione servizi nel database di sistema...");
-            manager.addService(&gap_service);
+            println!("⏳ [Rust] Registrazione servizio principale nel database...");
             manager.addService(&service);
         }
     }
@@ -170,11 +174,11 @@ impl BleDelegate {
 // Actually, `initWithDelegate` uses the ObjC runtime. The Delegate must be retained.
 // We can just keep them on the stack of the `run_ble_runloop` function which never returns.
 
-pub fn run_ble_runloop(_identity: RingIdentity) -> Result<()> {
+pub fn run_ble_runloop(_identity: RingIdentity, tx_packet: Sender<WirePacket>) -> Result<()> {
     let mtm = MainThreadMarker::new().expect("Must run on Main Thread for macOS BLE");
     unsafe {
         println!("🚀 [Rust-Mac] Initializing BLE on Main Thread...");
-        let delegate = BleDelegate::new(mtm);
+        let delegate = BleDelegate::new(mtm, tx_packet);
         let delegate_proto = ProtocolObject::from_ref(&*delegate);
         
         // Queue = nil (Main Queue)

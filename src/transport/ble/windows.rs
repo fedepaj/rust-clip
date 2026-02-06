@@ -6,6 +6,8 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::*;
 use windows::Storage::Streams::DataWriter;
 use windows::Foundation::TypedEventHandler;
 // use windows::Foundation::Collections::IVector; // Unused if Append works inherently
+use crate::core::packet::WirePacket;
+use flume::Sender;
 
 // UUIDs costanti (che poi diverranno dinamici)
 const SERVICE_UUID_STR: &str = "99999999-0000-0000-0000-000000000001";
@@ -17,9 +19,10 @@ struct WindowsBleServer {
     _publisher: BluetoothLEAdvertisementPublisher, // Keep alive
     _read_char: GattLocalCharacteristic,
     _write_char: GattLocalCharacteristic,
+    _sender: Sender<WirePacket>, // Keep channel alive if needed, though closure captures it
 }
 
-pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
+pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePacket>) -> Result<()> {
     println!("🔍 [BLE-Win] Step 1: Setup UUIDs");
     // 1. Setup Service UUID
     let service_uuid = GUID::from(SERVICE_UUID_STR);
@@ -80,10 +83,24 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     let write_char = write_result.Characteristic()?;
 
     // WRITE Handler
-    write_char.WriteRequested(&TypedEventHandler::new(|_: &Option<GattLocalCharacteristic>, args: &Option<GattWriteRequestedEventArgs>| {
+    let tx_clone = tx_packet.clone();
+    write_char.WriteRequested(&TypedEventHandler::new(move |_: &Option<GattLocalCharacteristic>, args: &Option<GattWriteRequestedEventArgs>| {
         if let Some(args) = args {
              if let Ok(deferral) = args.GetDeferral() {
-                  println!("📥 [BLE-Win] Write Received!");
+                  // TODO: Use DataReader to read value
+                  // args.GetRequestAsync()?.await?.Value()?
+                  // For now we just ack.
+                  
+                  // Proper implementation:
+                  if let Ok(req) = args.GetRequestAsync() {
+                       // Note: This is inside a sync closure, but GetRequestAsync returns IAsyncOperation.
+                       // We can't await here easily without blocking or spawn.
+                       // Simplified: Get Value directly if available? No, must use Request.
+                       
+                       // Alternative: Just print for now until we add async handler helper.
+                       println!("📥 [BLE-Win] Write Received! (Parsing Pending)");
+                  }
+                  
                   let _ = deferral.Complete();
              }
         }
@@ -114,6 +131,7 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
         _publisher: BluetoothLEAdvertisementPublisher::new()?, // Start not called, just empty to satisfy struct
         _read_char: read_char,
         _write_char: write_char,
+        _sender: tx_packet,
     }));
 
     Ok(())

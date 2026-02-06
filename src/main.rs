@@ -9,6 +9,7 @@ use core::config::AppConfig;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use flume::{Sender, Receiver};
 use events::{UiCommand, CoreEvent};
+use crate::core::packet::WirePacket;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -44,23 +45,30 @@ fn main() -> anyhow::Result<()> {
             // 2. Clone Identity for Backend
             let id_backend = identity.clone();
 
-            // 3. Spawn Tokio Backend in Background Thread
+            // 3. Create Data Channel (Packet Flow)
+            // tx_packet -> Passed to BLE Adapters (Producers)
+            // rx_packet -> Passed to Backend (Consumer)
+            use rust_clip::core::packet::WirePacket;
+            let (tx_packet, rx_packet) = flume::unbounded::<WirePacket>();
+            let tx_backend = tx_packet.clone(); // For Windows (and self-sending if needed)
+
+            // 4. Spawn Tokio Backend in Background Thread
             std::thread::spawn(move || {
-                run_async_backend(id_backend, None, None).expect("Backend Crashed");
+                run_async_backend(id_backend, Some(rx_packet), tx_backend).expect("Backend Crashed");
             });
 
-            // 4. Main Thread Platform Specifics
+            // 5. Main Thread Platform Specifics
             #[cfg(target_os = "macos")]
             {
                 // BLOCKING CALL: Runs NSRunLoop forever
                 use rust_clip::transport::ble::macos::run_ble_runloop;
-                run_ble_runloop(identity)?;
+                // Pass tx directly to delegate
+                run_ble_runloop(identity, tx_packet)?;
             }
 
             #[cfg(not(target_os = "macos"))]
             {
                 // On Windows/Linux, just park or join.
-                // Since we don't have a main loop here yet (Tray is not active), we park.
                 loop { std::thread::park(); }
             }
         },
@@ -81,7 +89,11 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_async_backend(identity: RingIdentity, _rx_cmd: Option<Receiver<UiCommand>>, _tx_event: Option<Sender<CoreEvent>>) -> anyhow::Result<()> {
+fn run_async_backend(
+    identity: RingIdentity, 
+    _rx_packet: Option<Receiver<WirePacket>>, 
+    tx_packet: Sender<WirePacket>
+) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // --- PHASE 2: BLE START (Async Part) ---
@@ -89,7 +101,7 @@ fn run_async_backend(identity: RingIdentity, _rx_cmd: Option<Receiver<UiCommand>
         // On Windows, start() does the work.
         
         use rust_clip::transport::{Transport, ble::BleTransport};
-        let ble = BleTransport::new(identity.clone());
+        let ble = BleTransport::new(identity.clone(), tx_packet);
         
         // This will print a warning on macOS and do nothing, which is correct now.
         // On Windows, it starts the WinRT service.
@@ -98,6 +110,17 @@ fn run_async_backend(identity: RingIdentity, _rx_cmd: Option<Receiver<UiCommand>
         } else {
              #[cfg(not(target_os = "macos"))]
              println!("✅ BLE Service Initialized (Windows/Linux)");
+        }
+        
+        // Receiver Loop: Print incoming packets
+        if let Some(rx) = _rx_packet {
+            tokio::spawn(async move {
+                println!("👂 Backend listening for packets...");
+                while let Ok(packet) = rx.recv_async().await {
+                    println!("📦 Backend Received Packet: {:?}", packet);
+                    // Here we will trigger Handshake Logic
+                }
+            });
         }
 
         println!("Waiting for peers (Phase 2+)...");
