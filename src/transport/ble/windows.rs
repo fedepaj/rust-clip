@@ -98,26 +98,20 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     provider.StartAdvertisingWithParameters(&adv_params)?;
 
     // 5. Additional Manual Advertisement
-    println!("🔍 [BLE-Win] Step 8: Additional Advertisement");
-    let publisher = BluetoothLEAdvertisementPublisher::new()?;
-    publisher.Advertisement()?.SetLocalName(&HSTRING::from("RustClip-Win"))?;
+    // println!("🔍 [BLE-Win] Step 8: Additional Advertisement");
+    // let publisher = BluetoothLEAdvertisementPublisher::new()?;
+    // publisher.Advertisement()?.SetLocalName(&HSTRING::from("RustClip-Win"))?;
+    // publisher.Advertisement()?.ServiceUuids()?.Append(service_uuid)?;
     
-    // FIX: ServiceUuids() returns IVector<Guid>.
-    // The previous error "no method named ServiceUuids" was likely due to missing feature or confusion.
-    // In windows 0.52+, it should be ServiceUuids().
-    // If it still fails, it might be that ServiceUuids property is read-only but returns a collection we can append to?
-    // Yes, getting the property returns the collection.
-    publisher.Advertisement()?.ServiceUuids()?.Append(service_uuid)?;
-    
-    println!("🔍 [BLE-Win] Step 9: Publisher Start");
-    publisher.Start()?;
+    // println!("🔍 [BLE-Win] Step 9: Publisher Start");
+    // publisher.Start()?;
 
     println!("✅ [BLE-Win] Service Started & Advertising...");
 
     // Keep alive indefinitely
     let _server = Box::leak(Box::new(WindowsBleServer {
         provider,
-        _publisher: publisher,
+        _publisher: BluetoothLEAdvertisementPublisher::new()?, // Start not called, just empty to satisfy struct
         _read_char: read_char,
         _write_char: write_char,
     }));
