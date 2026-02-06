@@ -1,11 +1,11 @@
 use anyhow::{Result, anyhow};
 use crate::core::identity::RingIdentity;
-use std::sync::Arc;
-use windows::prelude::*;
+use windows::core::HSTRING;
 use windows::Devices::Bluetooth::Advertisement::*;
 use windows::Devices::Bluetooth::GenericAttributeProfile::*;
-use windows::Storage::Streams::{DataReader, DataWriter};
+use windows::Storage::Streams::DataWriter;
 use windows::Foundation::TypedEventHandler;
+use windows::Foundation::Collections::IVector;
 
 // UUIDs costanti (che poi diverranno dinamici)
 const SERVICE_UUID_STR: &str = "99999999-0000-0000-0000-000000000001";
@@ -45,31 +45,16 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     // READ Handler
     read_char.ReadRequested(&TypedEventHandler::new(|_: &Option<GattLocalCharacteristic>, args: &Option<GattReadRequestedEventArgs>| {
         if let Some(args) = args {
-             if let Ok(request) = args.GetRequestAsync()?.get() { // Sync wait in callback is tricky, but GetRequestAsync returns logic object
-                  // Actually specific docs say: request = args.GetRequestAsync().await? 
-                  // But callbacks in Rust for WinRT are often non-async closures.
-                  // We get the Request object immediately usually? No, it's async.
-                  // Wait, GetRequestAsync is an IAsyncOperation. 
-                  // In typical WinRT Rust usage, we can block or use aDeferral.
-                  
-                  // Let's grab a deferral first
-                  if let Ok(deferral) = args.GetDeferral() {
-                       // Respond logic
-                       let writer = DataWriter::new()?;
-                       writer.WriteString(&windows::core::HSTRING::from("RustClip-Win-Alive"))?;
-                       let buffer = writer.DetachBuffer()?;
-                       
-                       // We need to set value on the request
-                       // WinRT logic: request.RespondWithValue(buffer)
-                       // But we need to await the request object first? 
-                       // Check docs: args.GetRequestAsync() returns IAsyncOperation<GattReadRequest>
-                       
-                       // Blocking here might be bad if on UI thread, but we are background.
-                       // let request = args.GetRequestAsync()?.get()?; 
-                       // request.RespondWithValue(&buffer)?;
-                       
-                       // deferral.Complete()?;
+             if let Ok(deferral) = args.GetDeferral() {
+                  // Respond logic
+                  if let Ok(writer) = DataWriter::new() {
+                       let _ = writer.WriteString(&HSTRING::from("RustClip-Win-Alive"));
+                       if let Ok(buffer) = writer.DetachBuffer() {
+                            // TODO: Use Request object Properly
+                            // For now just ack
+                       }
                   }
+                  let _ = deferral.Complete();
              }
         }
         Ok(())
@@ -90,18 +75,8 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     write_char.WriteRequested(&TypedEventHandler::new(|_: &Option<GattLocalCharacteristic>, args: &Option<GattWriteRequestedEventArgs>| {
         if let Some(args) = args {
              if let Ok(deferral) = args.GetDeferral() {
-                  // Logic to read value
-                  // let request = args.GetRequestAsync()?.get()?;
-                  // let value = request.Value()?;
-                  // let reader = DataReader::FromBuffer(&value)?;
-                  // let len = reader.UnconsumedBufferLength()?;
-                  // ... read bytes ...
-                  
                   println!("📥 [BLE-Win] Write Received!");
-                  
-                  // request.Respond()?; // Ack
-                  
-                  deferral.Complete()?;
+                  let _ = deferral.Complete();
              }
         }
         Ok(())
@@ -115,15 +90,18 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
 
     // 5. Additional Manual Advertisement (Optional but good for visibility)
     let publisher = BluetoothLEAdvertisementPublisher::new()?;
-    publisher.Advertisement()?.LocalName()?.SetString(windows::core::HSTRING::from("RustClip-Win"))?;
+    
+    // FIX: Use SetLocalName instead of LocalName().SetString()
+    publisher.Advertisement()?.SetLocalName(&HSTRING::from("RustClip-Win"))?;
+    
+    // FIX: Import IVector to use Append
     publisher.Advertisement()?.ServiceUuids()?.Append(service_uuid)?;
+    
     publisher.Start()?;
 
     println!("✅ [BLE-Win] Service Started & Advertising...");
 
     // Keep alive indefinitely
-    // We leak the object or store it in a static/Arc.
-    // For now, let's just leak to keep it alive (Prototype style)
     let _server = Box::leak(Box::new(WindowsBleServer {
         provider,
         _publisher: publisher,
