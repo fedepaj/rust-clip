@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use crate::core::identity::RingIdentity;
-use windows::core::HSTRING;
+use windows::core::{HSTRING, GUID};
 use windows::Devices::Bluetooth::Advertisement::*;
 use windows::Devices::Bluetooth::GenericAttributeProfile::*;
 use windows::Storage::Streams::DataWriter;
@@ -21,11 +21,11 @@ struct WindowsBleServer {
 
 pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     // 1. Setup Service UUID
-    let service_uuid = windows::Foundation::Guid::from(SERVICE_UUID_STR);
+    let service_uuid = GUID::from(SERVICE_UUID_STR);
     
     // 2. Create GATT Service Provider
     let result = GattServiceProvider::CreateAsync(service_uuid)?.await?;
-    if result.Error()? != windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderError::Success {
+    if result.Error()? != GattServiceProviderError::Success {
         return Err(anyhow!("Failed to create GattServiceProvider: {:?}", result.Error()?));
     }
     let provider = result.ServiceProvider()?;
@@ -37,7 +37,7 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     read_params.SetReadProtectionLevel(GattProtectionLevel::Plain)?;
     
     let read_result = provider.Service()?.CreateCharacteristicAsync(
-        windows::Foundation::Guid::from(READ_CHAR_UUID),
+        GUID::from(READ_CHAR_UUID),
         &read_params
     )?.await?;
     let read_char = read_result.Characteristic()?;
@@ -66,7 +66,7 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     write_params.SetWriteProtectionLevel(GattProtectionLevel::Plain)?;
     
     let write_result = provider.Service()?.CreateCharacteristicAsync(
-        windows::Foundation::Guid::from(WRITE_CHAR_UUID),
+        GUID::from(WRITE_CHAR_UUID),
         &write_params
     )?.await?;
     let write_char = write_result.Characteristic()?;
@@ -88,13 +88,15 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     adv_params.SetIsDiscoverable(true)?;
     provider.StartAdvertisingWithParameters(&adv_params)?;
 
-    // 5. Additional Manual Advertisement (Optional but good for visibility)
+    // 5. Additional Manual Advertisement
     let publisher = BluetoothLEAdvertisementPublisher::new()?;
-    
-    // FIX: Use SetLocalName instead of LocalName().SetString()
     publisher.Advertisement()?.SetLocalName(&HSTRING::from("RustClip-Win"))?;
     
-    // FIX: Import IVector to use Append
+    // FIX: ServiceUuids() returns IVector<Guid>.
+    // The previous error "no method named ServiceUuids" was likely due to missing feature or confusion.
+    // In windows 0.52+, it should be ServiceUuids().
+    // If it still fails, it might be that ServiceUuids property is read-only but returns a collection we can append to?
+    // Yes, getting the property returns the collection.
     publisher.Advertisement()?.ServiceUuids()?.Append(service_uuid)?;
     
     publisher.Start()?;

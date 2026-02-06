@@ -87,6 +87,7 @@ windows = { version = "0.52", features = [
     "Devices_Bluetooth_Advertisement",
     "Devices_Bluetooth_GenericAttributeProfile",
     "Foundation",
+    "Foundation_Collections",
     "Storage_Streams",
 ] }
 
