@@ -100,33 +100,55 @@ fn run_async_backend(
         // On macOS, the actual BLE loop is on Main Thread.
         // On Windows, start() does the work.
         
+        // Initialize Handshake Manager
+        use rust_clip::transport::handshake::HandshakeManager;
+        let handshake = Arc::new(HandshakeManager::new(identity.clone()));
+
         use rust_clip::transport::{Transport, ble::BleTransport};
         let ble = BleTransport::new(identity.clone(), tx_packet);
         
-        // This will print a warning on macOS and do nothing, which is correct now.
-        // On Windows, it starts the WinRT service.
-        if let Err(e) = ble.start().await {
-             println!("❌ BLE Start Failed: {}", e);
-        } else {
-             #[cfg(not(target_os = "macos"))]
-             println!("✅ BLE Service Initialized (Windows/Linux)");
-        }
-        
+        // On Windows, this starts the WinRT service. On Mac, it's a no-op warning.
+        let ble_inner = ble.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ble_inner.start().await {
+                 println!("❌ BLE Start Failed: {}", e);
+            } else {
+                 #[cfg(not(target_os = "macos"))]
+                 println!("✅ BLE Service Initialized (Windows/Linux)");
+            }
+        });
+
         // Receiver Loop: Print incoming packets
         if let Some(rx) = _rx_packet {
+            let handshake_inner = handshake.clone();
             tokio::spawn(async move {
                 println!("👂 Backend listening for packets...");
                 while let Ok(packet) = rx.recv_async().await {
-                    println!("📦 Backend Received Packet: {:?}", packet);
-                    // Here we will trigger Handshake Logic
+                    println!("📦 Backend Received Raw Packet: {:?}", packet.header.packet_type);
+                    if let Err(e) = handshake_inner.handle_packet(packet) {
+                        println!("⚠️ [Handshake] Packet handling error: {}", e);
+                    }
                 }
             });
         }
 
         println!("Waiting for peers (Phase 2+)...");
+        println!("Press Ctrl+C to stop.");
 
-        // Keep alive
-        loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
+        // Graceful Shutdown Handler
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n🛑 Shutdown Signal Received...");
+                #[cfg(target_os = "macos")]
+                {
+                    use rust_clip::transport::ble::macos::stop_ble_runloop;
+                    stop_ble_runloop();
+                }
+                // Allow some time for cleanup
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(0);
+            }
+        }
     })
 }
 

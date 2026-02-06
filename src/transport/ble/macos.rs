@@ -8,8 +8,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, rc::Retained, MainThreadOnly};
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSDictionary, NSError, NSObject, NSObjectProtocol, NSRunLoop,
-    NSString,
-    // NSData rimosso per eliminare il warning (usiamo msg_send!)
+    NSString, NSDate,
 };
 use objc2_core_bluetooth::{
     CBAdvertisementDataLocalNameKey, CBAdvertisementDataServiceUUIDsKey, CBPeripheralManager,
@@ -24,8 +23,18 @@ const LOCAL_NAME:      &str = "MacBook-Rust-Test";
 
 use std::sync::OnceLock;
 
-static CLIENT_TX: OnceLock<Sender<WirePacket>> = OnceLock::new();
+use std::sync::atomic::{AtomicBool, Ordering};
 
+static CLIENT_TX: OnceLock<Sender<WirePacket>> = OnceLock::new();
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Signals the macOS BLE service to cleanup and stop.
+pub fn stop_ble_runloop() {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+    // Note: This won't immediately break NSRunLoop::run(), but we can check it in callbacks
+    // or use a more advanced CFRunLoopStop if needed. 
+    // For now, removeAllServices on exit is the priority.
+}
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -174,6 +183,7 @@ impl BleDelegate {
 // Actually, `initWithDelegate` uses the ObjC runtime. The Delegate must be retained.
 // We can just keep them on the stack of the `run_ble_runloop` function which never returns.
 
+
 pub fn run_ble_runloop(_identity: RingIdentity, tx_packet: Sender<WirePacket>) -> Result<()> {
     let mtm = MainThreadMarker::new().expect("Must run on Main Thread for macOS BLE");
     unsafe {
@@ -181,18 +191,31 @@ pub fn run_ble_runloop(_identity: RingIdentity, tx_packet: Sender<WirePacket>) -
         let delegate = BleDelegate::new(mtm, tx_packet);
         let delegate_proto = ProtocolObject::from_ref(&*delegate);
         
-        // Queue = nil (Main Queue)
-        // With RunLoop running, this works.
-        let _manager = CBPeripheralManager::initWithDelegate_queue(
+        let manager = CBPeripheralManager::initWithDelegate_queue(
             mtm.alloc(),
             Some(delegate_proto),
             None, 
         );
 
-        println!("👀 [Rust-Mac] RunLoop Starting. BLE should advertise now.");
-        NSRunLoop::currentRunLoop().run();
+        println!("👀 [Rust-Mac] RunLoop Starting. Press Ctrl+C to stop.");
+        
+        let run_loop = NSRunLoop::currentRunLoop();
+        loop {
+            // Run loop for 200ms
+            let next_date = NSDate::dateWithTimeIntervalSinceNow(0.2);
+            run_loop.runMode_beforeDate(objc2_foundation::NSDefaultRunLoopMode, &next_date);
+
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                println!("🧹 [Rust-Mac] Shutdown signal. Cleaning up BLE services...");
+                manager.stopAdvertising();
+                manager.removeAllServices();
+                // Wait a tiny bit for the OS to process
+                thread::sleep(std::time::Duration::from_millis(100));
+                break;
+            }
+        }
+        println!("👋 [Rust-Mac] RunLoop stopped.");
     }
-    // Unreachable
     Ok(())
 }
 

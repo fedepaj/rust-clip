@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use crate::core::packet::WirePacket;
 
 pub mod ble;
+pub mod handshake;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeerId(pub String); // Usually the Ed25519 Public Key (Hex/Base64)
