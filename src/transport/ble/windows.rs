@@ -5,7 +5,7 @@ use windows::Devices::Bluetooth::Advertisement::*;
 use windows::Devices::Bluetooth::GenericAttributeProfile::*;
 use windows::Storage::Streams::DataWriter;
 use windows::Foundation::TypedEventHandler;
-use windows::Foundation::Collections::IVector;
+// use windows::Foundation::Collections::IVector; // Unused if Append works inherently
 
 // UUIDs costanti (che poi diverranno dinamici)
 const SERVICE_UUID_STR: &str = "99999999-0000-0000-0000-000000000001";
@@ -25,7 +25,9 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     
     // 2. Create GATT Service Provider
     let result = GattServiceProvider::CreateAsync(service_uuid)?.await?;
-    if result.Error()? != GattServiceProviderError::Success {
+    // Workaround: GattServiceProviderError type not found in namespace for some reason.
+    // Checking raw value: Success = 0
+    if result.Error()?.0 != 0 {
         return Err(anyhow!("Failed to create GattServiceProvider: {:?}", result.Error()?));
     }
     let provider = result.ServiceProvider()?;

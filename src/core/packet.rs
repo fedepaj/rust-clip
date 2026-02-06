@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde::{Serialize, Deserialize};
 use ed25519_dalek::{Verifier, Signature, SigningKey, VerifyingKey, Signer};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
+    aead::Aead, 
     ChaCha20Poly1305, Nonce 
 };
 use rand::{RngCore, thread_rng};
