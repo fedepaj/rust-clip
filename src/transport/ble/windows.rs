@@ -20,9 +20,11 @@ struct WindowsBleServer {
 }
 
 pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
+    println!("🔍 [BLE-Win] Step 1: Setup UUIDs");
     // 1. Setup Service UUID
     let service_uuid = GUID::from(SERVICE_UUID_STR);
     
+    println!("🔍 [BLE-Win] Step 2: CreateAsync GattServiceProvider");
     // 2. Create GATT Service Provider
     let result = GattServiceProvider::CreateAsync(service_uuid)?.await?;
     // Workaround: GattServiceProviderError type not found in namespace for some reason.
@@ -34,10 +36,12 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
 
     // 3. Create Characteristics
     // READ Characteristic
+    println!("🔍 [BLE-Win] Step 3: Create Read Param");
     let read_params = GattLocalCharacteristicParameters::new()?;
     read_params.SetCharacteristicProperties(GattCharacteristicProperties::Read)?;
     read_params.SetReadProtectionLevel(GattProtectionLevel::Plain)?;
     
+    println!("🔍 [BLE-Win] Step 4: Create Read Char");
     let read_result = provider.Service()?.CreateCharacteristicAsync(
         GUID::from(READ_CHAR_UUID),
         &read_params
@@ -63,10 +67,12 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     }))?;
 
     // WRITE Characteristic
+    println!("🔍 [BLE-Win] Step 5: Create Write Param");
     let write_params = GattLocalCharacteristicParameters::new()?;
     write_params.SetCharacteristicProperties(GattCharacteristicProperties::Write)?;
     write_params.SetWriteProtectionLevel(GattProtectionLevel::Plain)?;
     
+    println!("🔍 [BLE-Win] Step 6: Create Write Char");
     let write_result = provider.Service()?.CreateCharacteristicAsync(
         GUID::from(WRITE_CHAR_UUID),
         &write_params
@@ -85,12 +91,14 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     }))?;
 
     // 4. Start Advertising the Service
+    println!("🔍 [BLE-Win] Step 7: Start Advertising Service");
     let adv_params = GattServiceProviderAdvertisingParameters::new()?;
     adv_params.SetIsConnectable(true)?;
     adv_params.SetIsDiscoverable(true)?;
     provider.StartAdvertisingWithParameters(&adv_params)?;
 
     // 5. Additional Manual Advertisement
+    println!("🔍 [BLE-Win] Step 8: Additional Advertisement");
     let publisher = BluetoothLEAdvertisementPublisher::new()?;
     publisher.Advertisement()?.SetLocalName(&HSTRING::from("RustClip-Win"))?;
     
@@ -101,6 +109,7 @@ pub async fn start_ble_service(_identity: RingIdentity) -> Result<()> {
     // Yes, getting the property returns the collection.
     publisher.Advertisement()?.ServiceUuids()?.Append(service_uuid)?;
     
+    println!("🔍 [BLE-Win] Step 9: Publisher Start");
     publisher.Start()?;
 
     println!("✅ [BLE-Win] Service Started & Advertising...");
