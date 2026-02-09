@@ -92,24 +92,39 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
 
     // WRITE Handler
     let tx_clone = tx_packet.clone();
+    let rt_handle = tokio::runtime::Handle::current();
+
     write_char.WriteRequested(&TypedEventHandler::new(move |_: &Option<GattLocalCharacteristic>, args: &Option<GattWriteRequestedEventArgs>| {
         if let Some(args) = args {
              if let Ok(deferral) = args.GetDeferral() {
-                  // TODO: Use DataReader to read value
-                  // args.GetRequestAsync()?.await?.Value()?
-                  // For now we just ack.
+                  let args_clone = args.clone();
+                  let tx_clone = tx_clone.clone();
                   
-                  // Proper implementation:
-                  if let Ok(req) = args.GetRequestAsync() {
-                       // Note: This is inside a sync closure, but GetRequestAsync returns IAsyncOperation.
-                       // We can't await here easily without blocking or spawn.
-                       // Simplified: Get Value directly if available? No, must use Request.
-                       
-                       // Alternative: Just print for now until we add async handler helper.
-                       println!("📥 [BLE-Win] Write Received! (Parsing Pending)");
-                  }
-                  
-                  let _ = deferral.Complete();
+                  // Spawn async task because GetRequestAsync returns IAsyncOperation
+                  rt_handle.spawn(async move {
+                       if let Ok(op) = args_clone.GetRequestAsync() {
+                           if let Ok(req) = op.await {
+                               // Read Value
+                               if let Ok(buffer) = req.Value() {
+                                   if let Ok(reader) = DataReader::FromBuffer(&buffer) {
+                                       let len = buffer.Length().unwrap_or(0) as usize;
+                                       let mut bytes = vec![0u8; len];
+                                       if let Ok(_) = reader.ReadBytes(&mut bytes) {
+                                            println!("📥 [BLE-Win] Payload received: {} bytes", len);
+                                            // Deserialize & Send
+                                            if let Ok(packet) = bincode::deserialize::<WirePacket>(&bytes) {
+                                                let _ = tx_clone.send_async(packet).await;
+                                            } else {
+                                                println!("⚠️ [BLE-Win] Packet Parse Failed");
+                                            }
+                                       }
+                                   }
+                               }
+                           }
+                       }
+                       // Complete Deferral
+                       let _ = deferral.Complete();
+                  });
              }
         }
         Ok(())
