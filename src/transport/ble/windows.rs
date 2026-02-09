@@ -165,7 +165,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
     // Handler is sync, so we spawn logic.
     let rt_handle = tokio::runtime::Handle::current();
     let identity_watcher = _identity.clone();
-    watcher.Received(&TypedEventHandler::new(move |watcher, args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
+    watcher.Received(&TypedEventHandler::new(move |_watcher, args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
         if let Some(args) = args {
              // Check UUIDs
              if let Ok(uuids) = args.Advertisement()?.ServiceUuids() {
@@ -296,12 +296,15 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
              if let Some(ch) = char_opt {
                  if let Ok(bytes) = bincode::serialize(&packet) {
                       println!("📤 [BLE-Win] Sending {} bytes...", bytes.len());
-                      if let Ok(writer) = DataWriter::new() {
-                           let _ = writer.WriteBytes(&bytes);
-                            if let Ok(buffer) = writer.DetachBuffer() {
-                                 let result = ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse);
-                                 if let Ok(op) = result {
-                                     // Await explicitly to ensure packet is sent
+                            if let Ok(writer) = DataWriter::new() {
+                                 let _ = writer.WriteBytes(&bytes);
+                                 
+                                 // Scoping buffer tightly to avoid holding !Send type across await
+                                 let op = if let Ok(buffer) = writer.DetachBuffer() {
+                                      ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse).ok()
+                                 } else { None };
+
+                                 if let Some(op) = op {
                                      if let Ok(status) = op.await {
                                          if status == GattCommunicationStatus::Success {
                                              println!("✅ [BLE-Win] SENT OK ({} bytes)", bytes.len());
@@ -309,11 +312,8 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                              println!("❌ [BLE-Win] SEND FAILED: {:?}", status);
                                          }
                                      }
-                                 } else {
-                                     println!("❌ [BLE-Win] CreateAsync Write Failed");
                                  }
-                           }
-                      }
+                            }
                  }
              } else {
                  println!("⚠️ [BLE-Win] Packet Dropped. No Peer.");
