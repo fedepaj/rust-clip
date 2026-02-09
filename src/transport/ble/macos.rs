@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crate::core::identity::RingIdentity;
-use crate::core::packet::WirePacket;
+use crate::core::identity::RingIdentity;
+use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
 use std::thread;
 use flume::{Sender, Receiver};
 use std::sync::{OnceLock, Mutex};
@@ -28,6 +29,7 @@ use std::cell::RefCell;
 
 static CLIENT_TX: OnceLock<Sender<WirePacket>> = OnceLock::new();
 static CLIENT_RX: OnceLock<Receiver<WirePacket>> = OnceLock::new();
+static IDENTITY: OnceLock<RingIdentity> = OnceLock::new();
 
 thread_local! {
     // Simplified: Keep track of ONE connected peripheral for testing
@@ -183,6 +185,8 @@ define_class!(
                                  WRITE_CHARACTERISTIC.with(|c| {
                                      *c.borrow_mut() = Some(ch.retain());
                                  });
+                                 println!("🎯 [Rust-Client] WRITE Characteristic Found! Sending Hello...");
+                                 self.send_hello();
                              }
                      }
                  }
@@ -196,9 +200,10 @@ define_class!(
 );
 
 impl BleDelegate {
-    pub fn new(mtm: MainThreadMarker, tx_packet: Sender<WirePacket>, rx_packet: Receiver<WirePacket>) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, identity: RingIdentity, tx_packet: Sender<WirePacket>, rx_packet: Receiver<WirePacket>) -> Retained<Self> {
         let _ = CLIENT_TX.set(tx_packet);
         let _ = CLIENT_RX.set(rx_packet);
+        let _ = IDENTITY.set(identity);
         // Thread locals init lazily
         
         let this = mtm.alloc(); // Wait, mtm.alloc() is creating AnyObject?
@@ -297,11 +302,11 @@ impl BleDelegate {
     }
 }
 
-pub fn run_ble_runloop(_identity: RingIdentity, tx_packet: Sender<WirePacket>, rx_packet: Receiver<WirePacket>) -> Result<()> {
+pub fn run_ble_runloop(identity: RingIdentity, tx_packet: Sender<WirePacket>, rx_packet: Receiver<WirePacket>) -> Result<()> {
     let mtm = MainThreadMarker::new().expect("Must run on Main Thread for macOS BLE");
     unsafe {
         println!("🚀 [Rust-Mac] Initializing BLE (Client + Server)...");
-        let delegate = BleDelegate::new(mtm, tx_packet, rx_packet);
+        let delegate = BleDelegate::new(mtm, identity, tx_packet, rx_packet);
         
         // Explicitly cast for Server
         let server_delegate = ProtocolObject::<dyn CBPeripheralManagerDelegate>::from_ref(&*delegate);

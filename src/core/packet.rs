@@ -19,9 +19,21 @@ pub struct PacketHeader {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum PacketType {
     Hello,
+    Welcome,
     ClipboardText,
     FileChunk,
     Ack,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum HandshakeMsg {
+    Hello {
+        pubkey: Vec<u8>,
+        rotating_id: String,
+    },
+    Welcome {
+        pubkey: Vec<u8>,
+    },
 }
 
 // The structure sent over the wire
@@ -94,5 +106,24 @@ impl WirePacket {
             .map_err(|_| anyhow!("Decryption failed! Wrong session key?"))?;
 
         Ok((self.header.clone(), plaintext))
+    }
+    }
+
+    /// Verify and Open a Plaintext packet
+    pub fn open_plain(
+        &self,
+        verify_key: &VerifyingKey
+    ) -> Result<(PacketHeader, Vec<u8>)> {
+        // 1. Verify Signature
+        let header_bytes = bincode::serialize(&self.header)?;
+        let mut sign_data = Vec::with_capacity(header_bytes.len() + self.payload.len());
+        sign_data.extend_from_slice(&header_bytes);
+        sign_data.extend_from_slice(&self.payload);
+
+        verify_key.verify(&sign_data, &self.signature)
+            .map_err(|e| anyhow!("Invalid Signature! {}", e))?;
+
+        // 2. Return Payload as is
+        Ok((self.header.clone(), self.payload.clone()))
     }
 }

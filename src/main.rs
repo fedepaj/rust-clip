@@ -9,7 +9,7 @@ use core::config::AppConfig;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use flume::{Sender, Receiver};
 use events::{UiCommand, CoreEvent};
-use crate::core::packet::WirePacket;
+use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -119,11 +119,48 @@ fn run_async_backend(
         
         // Receiver Loop: Print incoming packets
         if let Some(rx) = _rx_packet {
+            let tx_out_loop = _tx_out.clone();
+            let id_loop = identity.clone();
+            
             tokio::spawn(async move {
                 println!("👂 Backend listening for packets...");
                 while let Ok(packet) = rx.recv_async().await {
-                    println!("📦 Backend Received Packet: {:?}", packet);
-                    // Here we will trigger Handshake Logic
+                    match packet.header.packet_type {
+                        PacketType::Hello => {
+                            // Parse Payload
+                            if let Ok(msg) = bincode::deserialize::<HandshakeMsg>(&packet.payload) {
+                                if let HandshakeMsg::Hello { pubkey: _, rotating_id } = msg {
+                                    println!("👋 [Backend] Received Hello from {}! Reply Welcome...", rotating_id);
+                                    
+                                    // Reply Welcome
+                                    if let Some(tx) = &tx_out_loop {
+                                        let welcome_msg = HandshakeMsg::Welcome {
+                                            pubkey: id_loop.public_key.as_bytes().to_vec(),
+                                        };
+                                        if let Ok(bytes) = bincode::serialize(&welcome_msg) {
+                                            if let Ok(reply) = WirePacket::new_plain(
+                                                id_loop.get_rotating_id(),
+                                                PacketType::Welcome,
+                                                &bytes,
+                                                &id_loop.sign_key
+                                            ) {
+                                                let _ = tx.send_async(reply).await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        PacketType::Welcome => {
+                            if let Ok(msg) = bincode::deserialize::<HandshakeMsg>(&packet.payload) {
+                                 if let HandshakeMsg::Welcome { pubkey: _ } = msg {
+                                     println!("🤝 [Backend] Session ESTABLISHED! (Welcome received)");
+                                     // TODO: Save Peer PubKey
+                                 }
+                            }
+                        },
+                        _ => println!("📦 [Backend] Received Data Packet: {} bytes", packet.payload.len()),
+                    }
                 }
             });
         }

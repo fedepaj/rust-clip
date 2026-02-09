@@ -6,7 +6,7 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::*;
 use windows::Storage::Streams::DataWriter;
 use windows::Foundation::TypedEventHandler;
 // use windows::Foundation::Collections::IVector; // Unused if Append works inherently
-use crate::core::packet::WirePacket;
+use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
 use flume::{Sender, Receiver};
 use std::sync::{Arc, Mutex};
 use windows::Devices::Bluetooth::*;
@@ -145,6 +145,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
     // Filter by Service UUID? Or check in handler?
     // Handler is sync, so we spawn logic.
     let rt_handle = tokio::runtime::Handle::current();
+    let identity_watcher = _identity.clone();
     watcher.Received(&TypedEventHandler::new(move |watcher, args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
         if let Some(args) = args {
              // Check UUIDs
@@ -160,6 +161,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                       // Found peer!
                       let addr = args.BluetoothAddress()?;
                       let state = state_in_watcher.clone();
+                      let id = identity_watcher.clone();
                       
                       // Spawn connect task
                       rt_handle.spawn(async move {
@@ -203,9 +205,32 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                      
                                                                      if let Some(ch) = char_to_use {
                                                                          println!("🎯 [BLE-Win-Client] Write Char Found!");
-                                                                         let mut lock = state.lock().unwrap();
                                                                          lock.device = Some(device);
-                                                                         lock.write_char = Some(ch);
+                                                                         lock.write_char = Some(ch.clone());
+                                                                         
+                                                                         // Send Hello
+                                                                         println!("👋 [BLE-Win-Client] Sending Hello handshake...");
+                                                                         let payload = HandshakeMsg::Hello {
+                                                                             pubkey: id.public_key.as_bytes().to_vec(),
+                                                                             rotating_id: id.get_rotating_id(),
+                                                                         };
+                                                                         if let Ok(bytes) = bincode::serialize(&payload) {
+                                                                             if let Ok(packet) = WirePacket::new_plain(
+                                                                                 id.get_rotating_id(),
+                                                                                 PacketType::Hello,
+                                                                                 &bytes,
+                                                                                 &id.sign_key
+                                                                             ) {
+                                                                                 if let Ok(pkt_bytes) = bincode::serialize(&packet) {
+                                                                                     if let Ok(writer) = DataWriter::new() {
+                                                                                         let _ = writer.WriteBytes(&pkt_bytes);
+                                                                                         if let Ok(buffer) = writer.DetachBuffer() {
+                                                                                             let _ = ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse);
+                                                                                         }
+                                                                                     }
+                                                                                 }
+                                                                             }
+                                                                         }
                                                                      }
                                                                  }
                                                               }
