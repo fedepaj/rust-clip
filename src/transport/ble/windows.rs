@@ -3,7 +3,7 @@ use crate::core::identity::RingIdentity;
 use windows::core::{HSTRING, GUID};
 use windows::Devices::Bluetooth::Advertisement::*;
 use windows::Devices::Bluetooth::GenericAttributeProfile::*;
-use windows::Storage::Streams::DataWriter;
+use windows::Storage::Streams::{DataWriter, DataReader};
 use windows::Foundation::TypedEventHandler;
 // use windows::Foundation::Collections::IVector; // Unused if Append works inherently
 use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
@@ -109,7 +109,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                    if let Ok(reader) = DataReader::FromBuffer(&buffer) {
                                        let len = buffer.Length().unwrap_or(0) as usize;
                                        let mut bytes = vec![0u8; len];
-                                       if let Ok(_) = reader.ReadBytes(&mut bytes) {
+                                       if reader.ReadBytes(&mut bytes).is_ok() {
                                             println!("📥 [BLE-Win] Payload received: {} bytes", len);
                                             // Deserialize & Send
                                             if let Ok(packet) = bincode::deserialize::<WirePacket>(&bytes) {
