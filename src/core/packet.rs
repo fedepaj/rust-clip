@@ -107,6 +107,43 @@ impl WirePacket {
 
         Ok((self.header.clone(), plaintext))
     }
+
+    /// Create a plaintext packet (e.g. Handshake) - Signed but NOT Encrypted
+    pub fn new_plain(
+        sender_id: String,
+        packet_type: PacketType,
+        payload_plain: &[u8],
+        signing_key: &SigningKey,
+    ) -> Result<Self> {
+        // 1. Generate Nonce (dummy for plain, or random)
+        let mut nonce_bytes = [0u8; 12];
+        thread_rng().fill_bytes(&mut nonce_bytes);
+
+        // 2. Clear Payload (No Encryption)
+        let payload = payload_plain.to_vec();
+
+        // 3. Create Header
+        let header = PacketHeader {
+            sender_id,
+            packet_type,
+            timestamp: chrono::Utc::now().timestamp() as u64,
+            nonce: nonce_bytes,
+        };
+
+        // 4. Sign (Header Bytes + Payload)
+        // Note: Sign plain payload
+        let header_bytes = bincode::serialize(&header)?;
+        let mut sign_data = Vec::with_capacity(header_bytes.len() + payload.len());
+        sign_data.extend_from_slice(&header_bytes);
+        sign_data.extend_from_slice(&payload);
+
+        let signature = signing_key.sign(&sign_data);
+
+        Ok(WirePacket {
+            header,
+            payload, // Plaintext
+            signature,
+        })
     }
 
     /// Verify and Open a Plaintext packet

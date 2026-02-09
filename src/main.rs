@@ -142,7 +142,7 @@ fn run_async_backend(
                                                 id_loop.get_rotating_id(),
                                                 PacketType::Welcome,
                                                 &bytes,
-                                                &id_loop.sign_key
+                                                &id_loop.identity_key
                                             ) {
                                                 let _ = tx.send_async(reply).await;
                                             }

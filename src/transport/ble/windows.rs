@@ -219,7 +219,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                                  id.get_rotating_id(),
                                                                                  PacketType::Hello,
                                                                                  &bytes,
-                                                                                 &id.sign_key
+                                                                                 &id.identity_key
                                                                              ) {
                                                                                  if let Ok(pkt_bytes) = bincode::serialize(&packet) {
                                                                                      if let Ok(writer) = DataWriter::new() {

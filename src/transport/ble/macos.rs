@@ -1,6 +1,5 @@
 use anyhow::Result;
 use crate::core::identity::RingIdentity;
-use crate::core::identity::RingIdentity;
 use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
 use std::thread;
 use flume::{Sender, Receiver};
@@ -298,6 +297,26 @@ impl BleDelegate {
                      println!("⚠️ [Rust-Client] Drop packet. No Peer connected.");
                 }
             });
+        }
+    }
+
+    fn send_hello(&self) {
+        if let Some(id) = IDENTITY.get() {
+            println!("👋 [Rust-Client] Sending Hello handshake...");
+            let payload = HandshakeMsg::Hello {
+                pubkey: id.public_key.as_bytes().to_vec(),
+                rotating_id: id.get_rotating_id(),
+            };
+            if let Ok(bytes) = bincode::serialize(&payload) {
+                if let Ok(packet) = WirePacket::new_plain(
+                    id.get_rotating_id(),
+                    PacketType::Hello,
+                    &bytes,
+                    &id.identity_key
+                ) {
+                    self.send_packet(packet);
+                }
+            }
         }
     }
 }
