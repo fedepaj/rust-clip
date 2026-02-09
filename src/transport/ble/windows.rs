@@ -104,21 +104,25 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                   rt_handle.spawn(async move {
                        if let Ok(op) = args_clone.GetRequestAsync() {
                            if let Ok(req) = op.await {
-                               // Read Value
-                               if let Ok(buffer) = req.Value() {
+                               // Read Value - Need to scope !Send types tightly
+                               let packet_opt = if let Ok(buffer) = req.Value() {
                                    if let Ok(reader) = DataReader::FromBuffer(&buffer) {
                                        let len = buffer.Length().unwrap_or(0) as usize;
                                        let mut bytes = vec![0u8; len];
                                        if reader.ReadBytes(&mut bytes).is_ok() {
-                                            println!("📥 [BLE-Win] Payload received: {} bytes", len);
-                                            // Deserialize & Send
-                                            if let Ok(packet) = bincode::deserialize::<WirePacket>(&bytes) {
-                                                let _ = tx_clone.send_async(packet).await;
-                                            } else {
-                                                println!("⚠️ [BLE-Win] Packet Parse Failed");
-                                            }
-                                       }
-                                   }
+                                            Some(bytes)
+                                       } else { None }
+                                   } else { None }
+                               } else { None };
+
+                               if let Some(bytes) = packet_opt {
+                                    println!("📥 [BLE-Win] Payload received: {} bytes", bytes.len());
+                                    // Deserialize & Send (Send safe now)
+                                    if let Ok(packet) = bincode::deserialize::<WirePacket>(&bytes) {
+                                        let _ = tx_clone.send_async(packet).await;
+                                    } else {
+                                        println!("⚠️ [BLE-Win] Packet Parse Failed");
+                                    }
                                }
                            }
                        }
