@@ -298,13 +298,20 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                       println!("📤 [BLE-Win] Sending {} bytes...", bytes.len());
                       if let Ok(writer) = DataWriter::new() {
                            let _ = writer.WriteBytes(&bytes);
-                           if let Ok(buffer) = writer.DetachBuffer() {
-                                let _ = ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse); 
-                                // Fire and forget async write? Or await?
-                                // If we don't await, it might drop?
-                                // Let's try to await if possible, but we are in loop.
-                                // ch.WriteValue... returns IAsyncOperation. await it?
-                                // if let Ok(op) = ... { let _ = op.await; }
+                            if let Ok(buffer) = writer.DetachBuffer() {
+                                 let result = ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse);
+                                 if let Ok(op) = result {
+                                     // Await explicitly to ensure packet is sent
+                                     if let Ok(status) = op.await {
+                                         if status == GattCommunicationStatus::Success {
+                                             println!("✅ [BLE-Win] SENT OK ({} bytes)", bytes.len());
+                                         } else {
+                                             println!("❌ [BLE-Win] SEND FAILED: {:?}", status);
+                                         }
+                                     }
+                                 } else {
+                                     println!("❌ [BLE-Win] CreateAsync Write Failed");
+                                 }
                            }
                       }
                  }
