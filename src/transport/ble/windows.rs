@@ -10,10 +10,6 @@ use crate::core::packet::WirePacket;
 use flume::{Sender, Receiver};
 use std::sync::{Arc, Mutex};
 use windows::Devices::Bluetooth::*;
-use windows::Devices::Bluetooth::GenericAttributeProfile::*;
-use windows::Devices::Bluetooth::Advertisement::*;
-use windows::Foundation::TypedEventHandler;
-use windows::Storage::Streams::DataWriter;
 
 // For client state
 struct ClientState {
@@ -181,23 +177,38 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                            match device.GetGattServicesForUuidAsync(GUID::from(SERVICE_UUID_STR)) {
                                                Ok(op) => match op.await {
                                                   Ok(services) => {
-                                                      if let Ok(list) = services.Services() {
-                                                          if list.Size().unwrap_or(0) > 0 {
-                                                              let service = list.GetAt(0).expect("Service Index");
-                                                              // Get Char
-                                                              if let Ok(chars_op) = service.GetCharacteristicsForUuidAsync(GUID::from(WRITE_CHAR_UUID)) {
+                                                      let service_to_use = {
+                                                          // CRITICAL: Inspect IVectorView synchronously and extract needed item
+                                                          // to avoid holding non-Send types across await.
+                                                          if let Ok(list) = services.Services() {
+                                                              if list.Size().unwrap_or(0) > 0 {
+                                                                  Some(list.GetAt(0).expect("Service Index"))
+                                                              } else { None }
+                                                          } else { None }
+                                                      };
+
+                                                      if let Some(service) = service_to_use {
+                                                          // Get Char
+                                                          match service.GetCharacteristicsForUuidAsync(GUID::from(WRITE_CHAR_UUID)) {
+                                                              Ok(chars_op) => {
                                                                  if let Ok(chars_res) = chars_op.await {
-                                                                     if let Ok(char_list) = chars_res.Characteristics() {
-                                                                         if char_list.Size().unwrap_or(0) > 0 {
-                                                                             let ch = char_list.GetAt(0).unwrap();
-                                                                             println!("🎯 [BLE-Win-Client] Write Char Found!");
-                                                                             let mut lock = state.lock().unwrap();
-                                                                             lock.device = Some(device);
-                                                                             lock.write_char = Some(ch);
-                                                                         }
+                                                                     let char_to_use = {
+                                                                         if let Ok(char_list) = chars_res.Characteristics() {
+                                                                             if char_list.Size().unwrap_or(0) > 0 {
+                                                                                 Some(char_list.GetAt(0).unwrap())
+                                                                             } else { None }
+                                                                         } else { None }
+                                                                     };
+                                                                     
+                                                                     if let Some(ch) = char_to_use {
+                                                                         println!("🎯 [BLE-Win-Client] Write Char Found!");
+                                                                         let mut lock = state.lock().unwrap();
+                                                                         lock.device = Some(device);
+                                                                         lock.write_char = Some(ch);
                                                                      }
                                                                  }
                                                               }
+                                                              Err(e) => println!("❌ GetChars Error: {:?}", e),
                                                           }
                                                       }
                                                   },
