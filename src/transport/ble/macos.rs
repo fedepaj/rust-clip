@@ -141,7 +141,7 @@ define_class!(
         #[unsafe(method(centralManager:didConnectPeripheral:))]
         fn central_manager_did_connect_peripheral(&self, _central: &CBCentralManager, peripheral: &CBPeripheral) {
             unsafe {
-                println!("✅ [Rust-Client] Connected to {}. Discovering Services...", peripheral.name().unwrap());
+                println!("✅ [Rust-Client] Connected to {}. Discovering Services...", peripheral.name().map(|n| n.to_string()).unwrap_or("Unknown".to_string()));
                 peripheral.setDelegate(Some(ProtocolObject::from_ref(self)));
                 
                 // Discover target service

@@ -144,6 +144,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
     
     // Filter by Service UUID? Or check in handler?
     // Handler is sync, so we spawn logic.
+    let rt_handle = tokio::runtime::Handle::current();
     watcher.Received(&TypedEventHandler::new(move |watcher, args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
         if let Some(args) = args {
              // Check UUIDs
@@ -161,7 +162,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                       let state = state_in_watcher.clone();
                       
                       // Spawn connect task
-                      tokio::spawn(async move {
+                      rt_handle.spawn(async move {
                           // Check if already connected to avoid spam
                           let already_connected = {
                                state.lock().unwrap().device.is_some()
