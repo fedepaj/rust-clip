@@ -17,11 +17,12 @@ pub mod linux;
 pub struct BleTransport {
     identity: RingIdentity,
     tx_packet: flume::Sender<WirePacket>,
+    rx_out: Option<flume::Receiver<WirePacket>>,
 }
 
 impl BleTransport {
-    pub fn new(identity: RingIdentity, tx_packet: flume::Sender<WirePacket>) -> Arc<Self> {
-        Arc::new(Self { identity, tx_packet })
+    pub fn new(identity: RingIdentity, tx_packet: flume::Sender<WirePacket>, rx_out: Option<flume::Receiver<WirePacket>>) -> Arc<Self> {
+        Arc::new(Self { identity, tx_packet, rx_out })
     }
 }
 
@@ -35,7 +36,8 @@ impl Transport for BleTransport {
 
         #[cfg(target_os = "windows")]
         {
-            return windows::start_ble_service(self.identity.clone(), self.tx_packet.clone()).await;
+            let rx = self.rx_out.clone().ok_or_else(|| anyhow::anyhow!("Missing RX Out Channel for Windows BLE"))?;
+            return windows::start_ble_service(self.identity.clone(), self.tx_packet.clone(), rx).await;
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]

@@ -45,16 +45,19 @@ fn main() -> anyhow::Result<()> {
             // 2. Clone Identity for Backend
             let id_backend = identity.clone();
 
-            // 3. Create Data Channel (Packet Flow)
-            // tx_packet -> Passed to BLE Adapters (Producers)
-            // rx_packet -> Passed to Backend (Consumer)
+            // 3. Create Data Channels (Packet Flow)
+            // INBOUND: tx_packet (BLE) -> rx_packet (Backend)
             use rust_clip::core::packet::WirePacket;
             let (tx_packet, rx_packet) = flume::unbounded::<WirePacket>();
             let tx_backend = tx_packet.clone(); // For Windows (and self-sending if needed)
 
+            // OUTBOUND: tx_out (Backend) -> rx_out (BLE)
+            let (tx_out, rx_out) = flume::unbounded::<WirePacket>();
+
             // 4. Spawn Tokio Backend in Background Thread
+            let rx_out_clone = rx_out.clone();
             std::thread::spawn(move || {
-                run_async_backend(id_backend, Some(rx_packet), tx_backend).expect("Backend Crashed");
+                run_async_backend(id_backend, Some(rx_packet), tx_backend, Some(tx_out), Some(rx_out_clone)).expect("Backend Crashed");
             });
 
             // 5. Main Thread Platform Specifics
@@ -62,8 +65,8 @@ fn main() -> anyhow::Result<()> {
             {
                 // BLOCKING CALL: Runs NSRunLoop forever
                 use rust_clip::transport::ble::macos::run_ble_runloop;
-                // Pass tx directly to delegate
-                run_ble_runloop(identity, tx_packet)?;
+                // Pass tx (inbound) and rx (outbound)
+                run_ble_runloop(identity, tx_packet, rx_out)?;
             }
 
             #[cfg(not(target_os = "macos"))]
@@ -92,7 +95,9 @@ fn main() -> anyhow::Result<()> {
 fn run_async_backend(
     identity: RingIdentity, 
     _rx_packet: Option<Receiver<WirePacket>>, 
-    tx_packet: Sender<WirePacket>
+    tx_packet: Sender<WirePacket>,
+    _tx_out: Option<Sender<WirePacket>>,
+    rx_out: Option<Receiver<WirePacket>>
 ) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -101,7 +106,7 @@ fn run_async_backend(
         // On Windows, start() does the work.
         
         use rust_clip::transport::{Transport, ble::BleTransport};
-        let ble = BleTransport::new(identity.clone(), tx_packet);
+        let ble = BleTransport::new(identity.clone(), tx_packet, rx_out);
         
         // This will print a warning on macOS and do nothing, which is correct now.
         // On Windows, it starts the WinRT service.

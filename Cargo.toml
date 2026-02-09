@@ -68,14 +68,17 @@ sys-locale = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
-objc2-foundation = { version = "0.3.2", features = ["NSString", "NSArray", "NSDictionary", "NSData", "NSError"] }
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSArray", "NSDictionary", "NSData", "NSError", "NSTimer"] }
 objc2-core-bluetooth = { version = "0.3.2", features = [
     "CBPeripheralManager",
     "CBAdvertisementData",
     "CBUUID",
     "CBService",
     "CBCharacteristic",
-    "CBATTRequest"
+    "CBATTRequest",
+    "CBCentralManager",
+    "CBPeripheral",
+    "CBPeer",
 ] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
