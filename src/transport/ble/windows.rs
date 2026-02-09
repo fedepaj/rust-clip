@@ -205,6 +205,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                      
                                                                      if let Some(ch) = char_to_use {
                                                                          println!("🎯 [BLE-Win-Client] Write Char Found!");
+                                                                         let mut lock = state.lock().unwrap();
                                                                          lock.device = Some(device);
                                                                          lock.write_char = Some(ch.clone());
                                                                          
