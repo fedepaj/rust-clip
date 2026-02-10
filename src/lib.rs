@@ -2,6 +2,7 @@ pub mod core;
 // pub mod ui;
 pub mod events;
 pub mod transport;
+pub mod mesh;
 
 #[macro_use]
 extern crate rust_i18n;

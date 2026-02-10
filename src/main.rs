@@ -13,6 +13,8 @@ use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+use rust_clip::mesh::topology::Topology;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -57,10 +59,15 @@ fn main() -> anyhow::Result<()> {
             // OUTBOUND: tx_out (Backend) -> rx_out (BLE)
             let (tx_out, rx_out) = flume::unbounded::<WirePacket>();
 
-            // 4. Spawn Tokio Backend in Background Thread
+            // 4. Initialize Topology (Mesh State)
+            let topology = Topology::new();
+
+            // 5. Spawn Tokio Backend in Background Thread
             let rx_out_clone = rx_out.clone();
+            let topology_backend = topology.clone();
+
             std::thread::spawn(move || {
-                run_async_backend(id_backend, Some(rx_packet), tx_backend, Some(tx_out), Some(rx_out_clone)).expect("Backend Crashed");
+                run_async_backend(id_backend, Some(rx_packet), tx_backend, Some(tx_out), Some(rx_out_clone), topology_backend).expect("Backend Crashed");
             });
 
             // 5. Main Thread Platform Specifics
@@ -100,7 +107,8 @@ fn run_async_backend(
     _rx_packet: Option<Receiver<WirePacket>>, 
     tx_packet: Sender<WirePacket>,
     _tx_out: Option<Sender<WirePacket>>,
-    rx_out: Option<Receiver<WirePacket>>
+    rx_out: Option<Receiver<WirePacket>>,
+    topology: Topology,
 ) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -182,7 +190,10 @@ fn run_async_backend(
                                     let mut key_bytes = [0u8; 32];
                                     if hkdf.expand(b"session_key", &mut key_bytes).is_ok() {
                                         println!("🔑 [Backend-Server] Session Key Derived: {:?}...", &key_bytes[0..4]);
-                                        // TODO: Store in Mesh/PeerMap
+                                        // Store in Topology
+                                        let session_key = ChaCha20Poly1305::new(&key_bytes.into());
+                                        topology.add_or_update(rotating_id.clone(), peer_pk_bytes, Some(session_key));
+                                        println!("🗂️ [Backend] Peer {} stored in Topology.", rotating_id);
                                     }
                                     
                                     // 4. Reply Welcome
@@ -221,7 +232,18 @@ fn run_async_backend(
                                          let mut key_bytes = [0u8; 32];
                                          if hkdf.expand(b"session_key", &mut key_bytes).is_ok() {
                                             println!("🔑 [Backend-Client] Session Key Derived: {:?}...", &key_bytes[0..4]);
-                                            // TODO: Store in Mesh/PeerMap
+                                            // TODO: Store in Topology (We don't know PeerID exactly yet, handshake needs msg update?)
+                                            // Actually HandshakeMsg::Welcome uses Peer PubKey, but Client needs to associate it.
+                                            // For now, assume LinkUp provided SourceID? Unlikely.
+                                            // HandshakeMsg::Welcome needs to carry PeerID if not already known.
+                                            // Wait, Welcome packet has no ID field in my struct currently?
+                                            // Checking packet.rs: Welcome { pubkey, ephemeral_key }
+                                            // We can use the packet.header.sender_id!
+                                            
+                                            let peer_id = packet.header.sender_id.clone();
+                                            let session_key = ChaCha20Poly1305::new(&key_bytes.into());
+                                            topology.add_or_update(peer_id.clone(), _peer_pk_bytes, Some(session_key));
+                                             println!("🗂️ [Backend] Peer {} stored in Topology.", peer_id);
                                          }
                                      } else {
                                          println!("⚠️ [Backend] Received Welcome but no Pending Secret found!");
