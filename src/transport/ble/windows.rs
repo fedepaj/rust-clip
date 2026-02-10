@@ -105,9 +105,9 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                        if let Ok(op) = args_clone.GetRequestAsync() {
                            if let Ok(req) = op.await {
                                // Read Value - Need to scope !Send types tightly
-                               let packet_opt = if let Ok(buffer) = req.Value() {
-                                   if let Ok(reader) = DataReader::FromBuffer(&buffer) {
-                                       let len = buffer.Length().unwrap_or(0) as usize;
+                               let packet_opt = if let Ok(_buffer) = req.Value() {
+                                   if let Ok(reader) = DataReader::FromBuffer(&_buffer) {
+                                       let len = _buffer.Length().unwrap_or(0) as usize;
                                        let mut bytes = vec![0u8; len];
                                        if reader.ReadBytes(&mut bytes).is_ok() {
                                             Some(bytes)
@@ -165,6 +165,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
     // Handler is sync, so we spawn logic.
     let rt_handle = tokio::runtime::Handle::current();
     let identity_watcher = _identity.clone();
+    let tx_connect = tx_packet.clone(); // Clone specifically for Watcher
     watcher.Received(&TypedEventHandler::new(move |_watcher, args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
         if let Some(args) = args {
              // Check UUIDs
@@ -227,8 +228,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                          let mut lock = state.lock().unwrap();
                                                                          lock.device = Some(device);
                                                                          lock.write_char = Some(ch.clone());
-                                                                         
-                                                                         // Signal LinkUp instead of Hello
+                                                                                                                                                  // Signal LinkUp instead of Hello
                                                                           // This packet goes to Backend (tx_packet)
                                                                           println!("🔗 [BLE-Win-Client] Signaling LinkUp to Backend...");
                                                                           if let Ok(packet) = WirePacket::new_plain(
@@ -237,8 +237,11 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                               &[], // Empty Payload
                                                                               &id.identity_key
                                                                           ) {
-                                                                              // Send LOCALLY to Backend via tx_clone
-                                                                              let _ = tx_clone.send_async(packet).await;
+                                                                              // Drop Lock BEFORE Await
+                                                                              drop(lock); 
+                                                                              
+                                                                              // Send LOCALLY to Backend via tx_connect
+                                                                              let _ = tx_connect.send_async(packet).await;
                                                                           }
                                                                      }
                                                                  }
