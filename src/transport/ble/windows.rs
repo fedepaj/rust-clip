@@ -66,7 +66,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                   // Respond logic
                   if let Ok(writer) = DataWriter::new() {
                        let _ = writer.WriteString(&HSTRING::from("RustClip-Win-Alive"));
-                       if let Ok(buffer) = writer.DetachBuffer() {
+                       if let Ok(_buffer) = writer.DetachBuffer() {
                             // TODO: Use Request object Properly
                             // For now just ack
                        }
@@ -184,6 +184,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                       let id = identity_watcher.clone();
                       
                       // Spawn connect task
+                      let tx_inner = tx_connect.clone(); // Clone INSIDE closure for async block
                       rt_handle.spawn(async move {
                           // Check if already connected to avoid spam
                           let already_connected = {
@@ -240,8 +241,8 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                               // Drop Lock BEFORE Await
                                                                               drop(lock); 
                                                                               
-                                                                              // Send LOCALLY to Backend via tx_connect
-                                                                              let _ = tx_connect.send_async(packet).await;
+                                                                              // Send LOCALLY to Backend via tx_inner
+                                                                              let _ = tx_inner.send_async(packet).await;
                                                                           }
                                                                      }
                                                                  }
