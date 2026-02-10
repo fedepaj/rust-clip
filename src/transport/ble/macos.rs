@@ -1,15 +1,14 @@
 use anyhow::Result;
 use crate::core::identity::RingIdentity;
-use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
-use std::thread;
+use crate::core::packet::{WirePacket, PacketType};
 use flume::{Sender, Receiver};
-use std::sync::{OnceLock, Mutex};
+use std::sync::OnceLock;
 
-use objc2::runtime::{AnyObject, ProtocolObject, Sel}; 
+use objc2::runtime::{AnyObject, ProtocolObject}; 
 use objc2::{define_class, msg_send, rc::Retained, MainThreadOnly, sel, Message};
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSDictionary, NSError, NSObject, NSObjectProtocol, NSRunLoop,
-    NSString, NSTimer, NSDate,
+    NSString, NSTimer,
 };
 use objc2_core_bluetooth::{
     CBAdvertisementDataLocalNameKey, CBAdvertisementDataServiceUUIDsKey, CBPeripheralManager,
@@ -184,8 +183,8 @@ define_class!(
                                  WRITE_CHARACTERISTIC.with(|c| {
                                      *c.borrow_mut() = Some(ch.retain());
                                  });
-                                 println!("🎯 [Rust-Client] WRITE Characteristic Found! Sending Hello...");
-                                 self.send_hello();
+                                 println!("🔗 [Rust-Client] WRITE Characteristic Found! Signaling LinkUp...");
+                                 self.signal_link_up();
                              }
                      }
                  }
@@ -300,21 +299,20 @@ impl BleDelegate {
         }
     }
 
-    fn send_hello(&self) {
+    fn signal_link_up(&self) {
         if let Some(id) = IDENTITY.get() {
-            println!("👋 [Rust-Client] Sending Hello handshake...");
-            let payload = HandshakeMsg::Hello {
-                pubkey: id.public_key.as_bytes().to_vec(),
-                rotating_id: id.get_rotating_id(),
-            };
-            if let Ok(bytes) = bincode::serialize(&payload) {
-                if let Ok(packet) = WirePacket::new_plain(
-                    id.get_rotating_id(),
-                    PacketType::Hello,
-                    &bytes,
-                    &id.identity_key
-                ) {
-                    self.send_packet(packet);
+            println!("🔗 [Rust-Client] Signaling LinkUp to Backend...");
+            if let Ok(packet) = WirePacket::new_plain(
+                id.get_rotating_id(),
+                PacketType::LinkUp,
+                &[], // Empty Payload
+                &id.identity_key
+            ) {
+                // Send LOCALLY to Backend via CLIENT_TX
+                if let Some(tx) = CLIENT_TX.get() {
+                    let _ = tx.send(packet);
+                } else {
+                    println!("⚠️ [Rust-Client] CLIENT_TX not initialized!");
                 }
             }
         }

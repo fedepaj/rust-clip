@@ -10,6 +10,9 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use flume::{Sender, Receiver};
 use events::{UiCommand, CoreEvent};
 use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
+use x25519_dalek::{EphemeralSecret, PublicKey};
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -124,18 +127,69 @@ fn run_async_backend(
             
             tokio::spawn(async move {
                 println!("👂 Backend listening for packets...");
+                
+                // State for Handshake (Pendings)
+                // Note: In a real multi-peer scenario, this should be a HashMap<PeerID, EphemeralSecret>
+                // For Phase 2.5/3 (Single Peer focus), we can use a single slot or map by SourceID (if LinkUp provides it?)
+                // LinkUp currently has SourceID = Local Rotating ID.
+                // But we need to map the SECRET to the PEER we sent Hello to.
+                // Since we don't know PeerID when sending Hello (Client mode), we just hold one pending secret.
+                // Limitation: Only one concurrent handshake initiation.
+                let mut pending_secret: Option<EphemeralSecret> = None;
+
                 while let Ok(packet) = rx.recv_async().await {
                     match packet.header.packet_type {
+                        PacketType::LinkUp => {
+                            println!("🔗 [Backend] LinkUp received! Initiating Handshake...");
+                            // 1. Generate Ephemeral Keys
+                            let (secret, public) = RingIdentity::generate_ephemeral_key();
+                            pending_secret = Some(secret);
+
+                            // 2. Send Hello
+                            if let Some(tx) = &tx_out_loop {
+                                let hello_msg = HandshakeMsg::Hello {
+                                    pubkey: id_loop.public_key.as_bytes().to_vec(),
+                                    rotating_id: id_loop.get_rotating_id(),
+                                    ephemeral_key: *public.as_bytes(),
+                                };
+                                if let Ok(bytes) = bincode::serialize(&hello_msg) {
+                                    if let Ok(pkt) = WirePacket::new_plain(
+                                        id_loop.get_rotating_id(),
+                                        PacketType::Hello,
+                                        &bytes,
+                                        &id_loop.identity_key
+                                    ) {
+                                        let _ = tx.send_async(pkt).await;
+                                    }
+                                }
+                            }
+                        },
                         PacketType::Hello => {
                             // Parse Payload
                             if let Ok(msg) = bincode::deserialize::<HandshakeMsg>(&packet.payload) {
-                                if let HandshakeMsg::Hello { pubkey: _, rotating_id } = msg {
+                                if let HandshakeMsg::Hello { pubkey: peer_pk_bytes, rotating_id, ephemeral_key: peer_ek_bytes } = msg {
                                     println!("👋 [Backend] Received Hello from {}! Reply Welcome...", rotating_id);
                                     
-                                    // Reply Welcome
+                                    // 1. Generate OUR Ephemeral Keys
+                                    let (secret, public) = RingIdentity::generate_ephemeral_key();
+                                    
+                                    // 2. Compute Shared Secret
+                                    let peer_public = PublicKey::from(peer_ek_bytes);
+                                    let shared_secret = secret.diffie_hellman(&peer_public);
+                                    
+                                    // 3. Derive Session Key (HKDF)
+                                    let hkdf = Hkdf::<Sha256>::new(Some(b"rust-clip-v1"), shared_secret.as_bytes());
+                                    let mut key_bytes = [0u8; 32];
+                                    if hkdf.expand(b"session_key", &mut key_bytes).is_ok() {
+                                        println!("🔑 [Backend-Server] Session Key Derived: {:?}...", &key_bytes[0..4]);
+                                        // TODO: Store in Mesh/PeerMap
+                                    }
+                                    
+                                    // 4. Reply Welcome
                                     if let Some(tx) = &tx_out_loop {
                                         let welcome_msg = HandshakeMsg::Welcome {
                                             pubkey: id_loop.public_key.as_bytes().to_vec(),
+                                            ephemeral_key: *public.as_bytes(),
                                         };
                                         if let Ok(bytes) = bincode::serialize(&welcome_msg) {
                                             if let Ok(reply) = WirePacket::new_plain(
@@ -153,9 +207,25 @@ fn run_async_backend(
                         },
                         PacketType::Welcome => {
                             if let Ok(msg) = bincode::deserialize::<HandshakeMsg>(&packet.payload) {
-                                 if let HandshakeMsg::Welcome { pubkey: _ } = msg {
+                                 if let HandshakeMsg::Welcome { pubkey: _peer_pk_bytes, ephemeral_key: peer_ek_bytes } = msg {
                                      println!("🤝 [Backend] Session ESTABLISHED! (Welcome received)");
-                                     // TODO: Save Peer PubKey
+                                     
+                                     // 1. Retrieve Pending Secret
+                                     if let Some(secret) = pending_secret.take() {
+                                         // 2. Compute Shared Secret
+                                         let peer_public = PublicKey::from(peer_ek_bytes);
+                                         let shared_secret = secret.diffie_hellman(&peer_public);
+                                         
+                                         // 3. Derive Session Key
+                                         let hkdf = Hkdf::<Sha256>::new(Some(b"rust-clip-v1"), shared_secret.as_bytes());
+                                         let mut key_bytes = [0u8; 32];
+                                         if hkdf.expand(b"session_key", &mut key_bytes).is_ok() {
+                                            println!("🔑 [Backend-Client] Session Key Derived: {:?}...", &key_bytes[0..4]);
+                                            // TODO: Store in Mesh/PeerMap
+                                         }
+                                     } else {
+                                         println!("⚠️ [Backend] Received Welcome but no Pending Secret found!");
+                                     }
                                  }
                             }
                         },

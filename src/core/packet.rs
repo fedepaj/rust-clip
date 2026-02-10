@@ -23,6 +23,7 @@ pub enum PacketType {
     ClipboardText,
     FileChunk,
     Ack,
+    LinkUp, // New: Transport signals connection to Backend
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -30,9 +31,11 @@ pub enum HandshakeMsg {
     Hello {
         pubkey: Vec<u8>,
         rotating_id: String,
+        ephemeral_key: [u8; 32],
     },
     Welcome {
         pubkey: Vec<u8>,
+        ephemeral_key: [u8; 32],
     },
 }
 

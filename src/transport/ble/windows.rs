@@ -228,29 +228,18 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                          lock.device = Some(device);
                                                                          lock.write_char = Some(ch.clone());
                                                                          
-                                                                         // Send Hello
-                                                                         println!("👋 [BLE-Win-Client] Sending Hello handshake...");
-                                                                         let payload = HandshakeMsg::Hello {
-                                                                             pubkey: id.public_key.as_bytes().to_vec(),
-                                                                             rotating_id: id.get_rotating_id(),
-                                                                         };
-                                                                         if let Ok(bytes) = bincode::serialize(&payload) {
-                                                                             if let Ok(packet) = WirePacket::new_plain(
-                                                                                 id.get_rotating_id(),
-                                                                                 PacketType::Hello,
-                                                                                 &bytes,
-                                                                                 &id.identity_key
-                                                                             ) {
-                                                                                 if let Ok(pkt_bytes) = bincode::serialize(&packet) {
-                                                                                     if let Ok(writer) = DataWriter::new() {
-                                                                                         let _ = writer.WriteBytes(&pkt_bytes);
-                                                                                         if let Ok(buffer) = writer.DetachBuffer() {
-                                                                                             let _ = ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse);
-                                                                                         }
-                                                                                     }
-                                                                                 }
-                                                                             }
-                                                                         }
+                                                                         // Signal LinkUp instead of Hello
+                                                                          // This packet goes to Backend (tx_packet)
+                                                                          println!("🔗 [BLE-Win-Client] Signaling LinkUp to Backend...");
+                                                                          if let Ok(packet) = WirePacket::new_plain(
+                                                                              id.get_rotating_id(),
+                                                                              PacketType::LinkUp,
+                                                                              &[], // Empty Payload
+                                                                              &id.identity_key
+                                                                          ) {
+                                                                              // Send LOCALLY to Backend via tx_clone
+                                                                              let _ = tx_clone.send_async(packet).await;
+                                                                          }
                                                                      }
                                                                  }
                                                               }

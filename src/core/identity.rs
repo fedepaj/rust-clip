@@ -14,6 +14,7 @@ use aes_gcm::{
 use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
 use chrono::{Utc, Timelike, Datelike};
 use directories::ProjectDirs;
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
 // Type alias per HMAC-SHA256
 type HmacSha256 = Hmac<Sha256>;
@@ -111,6 +112,13 @@ impl RingIdentity {
     pub fn verify(public_key: &VerifyingKey, message: &[u8], signature: &Signature) -> Result<()> {
         public_key.verify(message, signature)
             .map_err(|e| anyhow!("Invalid signature: {}", e))
+    }
+
+    /// Genera una coppia di chiavi effimere per la sessione (X25519)
+    pub fn generate_ephemeral_key() -> (EphemeralSecret, PublicKey) {
+        let secret = EphemeralSecret::random_from_rng(thread_rng());
+        let public = PublicKey::from(&secret);
+        (secret, public)
     }
 
     // --- PERSISTENZA (Cifratura AES-GCM del Local Store) ---
