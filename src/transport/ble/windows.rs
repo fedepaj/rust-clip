@@ -6,7 +6,7 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::*;
 use windows::Storage::Streams::{DataWriter, DataReader};
 use windows::Foundation::TypedEventHandler;
 // use windows::Foundation::Collections::IVector; // Unused if Append works inherently
-use crate::core::packet::{WirePacket, PacketType, HandshakeMsg};
+use crate::core::packet::{WirePacket, PacketType};
 use flume::{Sender, Receiver};
 use std::sync::{Arc, Mutex};
 use windows::Devices::Bluetooth::*;
@@ -229,20 +229,27 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                          let mut lock = state.lock().unwrap();
                                                                          lock.device = Some(device);
                                                                          lock.write_char = Some(ch.clone());
-                                                                                                                                                  // Signal LinkUp instead of Hello
+                                                                          // Signal LinkUp instead of Hello
                                                                           // This packet goes to Backend (tx_packet)
                                                                           println!("🔗 [BLE-Win-Client] Signaling LinkUp to Backend...");
-                                                                          if let Ok(packet) = WirePacket::new_plain(
-                                                                              id.get_rotating_id(),
-                                                                              PacketType::LinkUp,
-                                                                              &[], // Empty Payload
-                                                                              &id.identity_key
-                                                                          ) {
-                                                                              // Drop Lock BEFORE Await
-                                                                              drop(lock); 
+                                                                          
+                                                                          let packet_opt = {
+                                                                              let mut lock = state.lock().unwrap();
+                                                                              lock.device = Some(device);
+                                                                              lock.write_char = Some(ch.clone());
                                                                               
-                                                                              // Send LOCALLY to Backend via tx_inner
-                                                                              let _ = tx_inner.send_async(packet).await;
+                                                                              // Build Packet inside lock but return it out
+                                                                               WirePacket::new_plain(
+                                                                                  id.get_rotating_id(),
+                                                                                  PacketType::LinkUp,
+                                                                                  &[], // Empty Payload
+                                                                                  &id.identity_key
+                                                                              ).ok()
+                                                                          }; // Lock dropped here
+
+                                                                          if let Some(packet) = packet_opt {
+                                                                               // Send LOCALLY to Backend via tx_inner
+                                                                               let _ = tx_inner.send_async(packet).await;
                                                                           }
                                                                      }
                                                                  }
