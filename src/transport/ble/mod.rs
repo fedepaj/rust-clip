@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::transport::{Transport, TransportType, PeerId};
+use crate::transport::{Transport, PeerId};
 use crate::core::packet::WirePacket;
 use crate::core::identity::RingIdentity;
 use std::sync::Arc;
