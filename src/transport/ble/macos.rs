@@ -304,6 +304,7 @@ impl BleDelegate {
             println!("🔗 [Rust-Client] Signaling LinkUp to Backend...");
             if let Ok(packet) = WirePacket::new_plain(
                 id.get_rotating_id(),
+                "broadcast".to_string(), // receiver_id
                 PacketType::LinkUp,
                 &[], // Empty Payload
                 &id.identity_key

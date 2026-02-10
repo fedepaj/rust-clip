@@ -5,17 +5,27 @@ use serde::{Serialize, Deserialize};
 use chrono::{Utc, DateTime};
 use anyhow::Result;
 
+use crate::transport::TransportType;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+
+#[derive(Clone, Debug)]
+pub struct TransportStatus {
+    pub last_seen: DateTime<Utc>,
+    pub addr: Option<SocketAddr>, // IP:Port for LAN/TCP
+    pub is_active: bool,
+}
+
 #[derive(Clone)]
 pub struct PeerEntry {
     pub rotating_id: String,
     pub pubkey: Vec<u8>, // Ed25519 Public Key (Identity)
-    pub last_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>, // Global last seen
     // Session Key is Ephemeral (In-Memory Only)
-    // Wrapped in Arc because ChaCha20Poly1305 might not be Clone, 
-    // but actually it is Clone if the underlying AEAD is. 
-    // Let's check. KeyInit::new() returns it. 
-    // chacha20poly1305::ChaCha20Poly1305 implements Clone.
     pub session_key: Option<ChaCha20Poly1305>, 
+    
+    // Hybrid Mesh Transports
+    pub transports: HashMap<TransportType, TransportStatus>,
 }
 
 impl PeerEntry {
@@ -25,7 +35,39 @@ impl PeerEntry {
             pubkey,
             last_seen: Utc::now(),
             session_key,
+            transports: HashMap::new(),
         }
+    }
+
+    pub fn update_transport(&mut self, transport: TransportType, addr: Option<SocketAddr>) {
+        self.last_seen = Utc::now();
+        self.transports.insert(transport, TransportStatus {
+            last_seen: Utc::now(),
+            addr,
+            is_active: true,
+        });
+    }
+
+    pub fn get_best_transport(&self) -> Option<(TransportType, Option<SocketAddr>)> {
+        // Preference: TCP > mDNS (LAN) > BLE
+        // Logic: Check active transports
+        
+        // 1. TcpDirect (Highest Priority)
+        if let Some(status) = self.transports.get(&TransportType::TcpDirect) {
+            if status.is_active { return Some((TransportType::TcpDirect, status.addr)); }
+        }
+
+        // 2. mDNS (LAN UDP)
+        if let Some(status) = self.transports.get(&TransportType::Mdns) {
+            if status.is_active { return Some((TransportType::Mdns, status.addr)); }
+        }
+
+        // 3. BLE (Fallback)
+        if let Some(status) = self.transports.get(&TransportType::Ble) {
+            if status.is_active { return Some((TransportType::Ble, None)); }
+        }
+
+        None
     }
 }
 
@@ -54,21 +96,29 @@ impl Topology {
     }
 
     /// Add or update a peer in the topology
-    pub fn add_or_update(&self, rotating_id: String, pubkey: Vec<u8>, session_key: Option<ChaCha20Poly1305>) {
+    pub fn add_or_update(&self, rotating_id: String, pubkey: Vec<u8>, session_key: Option<ChaCha20Poly1305>, transport: Option<(TransportType, Option<SocketAddr>)>) {
         // Check if exists
         if let Some(mut entry) = self.peers.get_mut(&rotating_id) {
             entry.last_seen = Utc::now();
             if let Some(key) = session_key {
                 entry.session_key = Some(key);
             }
-            // Update pubkey if needed? Usually pubkey doesn't change for same ID in a session.
-            // But RotatingID changes.
-            // If RotatingID changes, it's a "new" peer entry effectively.
+            // If we have a new pubkey and the old one was empty, update it.
+            if entry.pubkey.is_empty() && !pubkey.is_empty() {
+                entry.pubkey = pubkey;
+            }
+
+            if let Some((t_type, addr)) = transport {
+                entry.update_transport(t_type, addr);
+            }
             return;
         }
 
         // else insert
-        let entry = PeerEntry::new(rotating_id.clone(), pubkey, session_key);
+        let mut entry = PeerEntry::new(rotating_id.clone(), pubkey, session_key);
+        if let Some((t_type, addr)) = transport {
+             entry.update_transport(t_type, addr);
+        }
         self.peers.insert(rotating_id, entry);
     }
 

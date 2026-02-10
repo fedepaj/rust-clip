@@ -238,6 +238,7 @@ pub async fn start_ble_service(_identity: RingIdentity, tx_packet: Sender<WirePa
                                                                               // Build Packet inside lock but return it out
                                                                                WirePacket::new_plain(
                                                                                   id.get_rotating_id(),
+                                                                                  "broadcast".to_string(), // receiver_id
                                                                                   PacketType::LinkUp,
                                                                                   &[], // Empty Payload
                                                                                   &id.identity_key

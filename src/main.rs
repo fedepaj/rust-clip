@@ -15,6 +15,11 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use rust_clip::mesh::topology::Topology;
+use rust_clip::transport::TransportType;
+use rust_clip::transport::lan::mdns::MdnsService;
+use rust_clip::transport::lan::udp::UdpTransport;
+use rust_clip::mesh::gossip::VectorClock;
+use std::collections::HashMap;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -56,13 +61,87 @@ fn main() -> anyhow::Result<()> {
             let (tx_packet, rx_packet) = flume::unbounded::<WirePacket>();
             let tx_backend = tx_packet.clone(); // For Windows (and self-sending if needed)
 
-            // OUTBOUND: tx_out (Backend) -> rx_out (BLE)
+            // OUTBOUND: tx_out (Backend) -> Router (rx_out) -> [tx_ble (BLE) | udp (LAN)]
             let (tx_out, rx_out) = flume::unbounded::<WirePacket>();
+            
+            // BLE SPECIFIC CHANNEL
+            let (tx_ble, rx_ble) = flume::unbounded::<WirePacket>();
 
             // 4. Initialize Topology (Mesh State)
             let topology = Topology::new();
 
-            // 5. Spawn Tokio Backend in Background Thread
+            
+            // 6. Spawn Router Thread (Hybrid Mesh Logic)
+            let router_topology = topology.clone();
+            // We need UDP Transport reference here if available.
+            // But UDP is created locally inside match block.
+            // Let's restructure to ensure UDP scope availability.
+            let udp_transport = match UdpTransport::new() {
+                 Ok(udp) => {
+                     let port = udp.get_port();
+                     println!("✅ [UDP] Bound to port {}", port);
+                     
+                     // Start Listener
+                     if let Err(e) = udp.start(tx_packet.clone()) {
+                          println!("⚠️ [UDP] Failed to start listener: {}", e);
+                     }
+ 
+                     // Start mDNS
+                     let mdns_topology_clone = router_topology.clone(); // Re-clone locally
+                     if let Ok(mdns_service) = MdnsService::new(&identity, mdns_topology_clone, port) {
+                         if let Err(e) = mdns_service.start() {
+                             println!("⚠️ [mDNS] Startup Failed: {}", e);
+                         } else {
+                             println!("✅ [mDNS] Service Started (Background)");
+                         }
+                     }
+                     Some(udp)
+                 },
+                 Err(e) => {
+                     println!("⚠️ [UDP] Failed to bind: {}", e);
+                     None
+                 }
+            };
+
+            let rx_out_router = rx_out.clone();
+            std::thread::spawn(move || {
+                // Router Loop
+                while let Ok(packet) = rx_out_router.recv() {
+                    let receiver = &packet.header.receiver_id;
+                    let mut sent_via_lan = false;
+                    
+                    // Check Topology for Route
+                    if let Some(entry) = router_topology.peers.get(receiver) {
+                        if let Some((t_type, addr)) = entry.get_best_transport() {
+                            match t_type {
+                                TransportType::Mdns | TransportType::TcpDirect => {
+                                    if let Some(ip) = addr {
+                                        if let Some(udp) = &udp_transport {
+                                            println!("🚀 [Router] Sending via LAN (UDP) to {}...", receiver);
+                                            if let Err(e) = udp.send(ip, &packet) {
+                                                println!("❌ [Router] UDP Send Failed: {}", e);
+                                            } else {
+                                                sent_via_lan = true;
+                                            }
+                                        }
+                                    }
+                                },
+                                TransportType::Ble => {
+                                    // Fallthrough to BLE
+                                }
+                            }
+                        }
+                    } 
+                    
+                    if !sent_via_lan {
+                        // Default / Fallback to BLE
+                        // println!("🚀 [Router] Sending via BLE to {}...", receiver);
+                        let _ = tx_ble.send(packet);
+                    }
+                }
+            });
+
+            // 7. Spawn Tokio Backend in Background Thread
             let rx_out_clone = rx_out.clone();
             let topology_backend = topology.clone();
 
@@ -73,15 +152,35 @@ fn main() -> anyhow::Result<()> {
             // 5. Main Thread Platform Specifics
             #[cfg(target_os = "macos")]
             {
-                // BLOCKING CALL: Runs NSRunLoop forever
-                use rust_clip::transport::ble::macos::run_ble_runloop;
-                // Pass tx (inbound) and rx (outbound)
-                run_ble_runloop(identity, tx_packet, rx_out)?;
-            }
+                // 5. Main Thread Platform Specifics (macOS needs RunLoop)
+        use rust_clip::transport::ble::macos::run_ble_runloop;
+        if let Err(e) = run_ble_runloop(identity, tx_packet, rx_ble) {
+             eprintln!("🔥 [Rust-Mac] RunLoop Error: {}", e);
+        }
+    }
 
-            #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // 5. Windows specific initialization
+        // We use pure async with Tokio, but might need main thread for COM in some cases?
+        // Typically Windows Runtime is fine on any thread if MTA.
+        // But for consistency let's spawn a dedicated runtime block or just block.
+        
+        // We need to pass rx_ble, not rx_out!
+        let rt = tokio::runtime::Runtime::new()?;
+        use crate::transport::Transport;
+        use crate::transport::ble::windows;
+
+        let ble_transport = windows::BleTransport::new(identity, tx_packet, Some(rx_ble));
+
+        if let Err(e) = rt.block_on(ble_transport.start()) {
+             eprintln!("🔥 [Rust-Windows] BLE Start Error: {}", e);
+        }
+    }
+
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                // On Windows/Linux, just park or join.
+                // On Linux, just park or join.
                 loop { std::thread::park(); }
             }
         },
@@ -110,6 +209,10 @@ fn run_async_backend(
     rx_out: Option<Receiver<WirePacket>>,
     topology: Topology,
 ) -> anyhow::Result<()> {
+    // Phase 4: Gossip State
+    let vector_clock = Arc::new(std::sync::Mutex::new(VectorClock::new()));
+    let clock_backend = vector_clock.clone();
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // --- PHASE 2: BLE START (Async Part) ---
@@ -146,8 +249,24 @@ fn run_async_backend(
                 let mut pending_secret: Option<EphemeralSecret> = None;
 
                 while let Ok(packet) = rx.recv_async().await {
-                    match packet.header.packet_type {
-                        PacketType::LinkUp => {
+         // 3. Process Packet
+        // Check RELAY Logic
+        let my_id = identity.get_rotating_id();
+        if packet.header.receiver_id != "broadcast" && packet.header.receiver_id != my_id {
+            // Forward / Relay
+            // If receiver_id IS NOT me, relay it back out via Router
+            if let Some(tx) = &tx_out_loop { // Use tx_out_loop here
+                println!("🔄 [Backend] Relaying packet for {}", packet.header.receiver_id);
+                // We just put it back in the outbound queue. 
+                // The Router will decide where it goes.
+                // TODO: Verify TTL or Loop Prevention!
+                let _ = tx.send(packet);
+            }
+            continue;
+        }
+
+        match packet.header.packet_type {
+            PacketType::LinkUp => {
                             println!("🔗 [Backend] LinkUp received! Initiating Handshake...");
                             // 1. Generate Ephemeral Keys
                             let (secret, public) = RingIdentity::generate_ephemeral_key();
@@ -159,10 +278,12 @@ fn run_async_backend(
                                     pubkey: id_loop.public_key.as_bytes().to_vec(),
                                     rotating_id: id_loop.get_rotating_id(),
                                     ephemeral_key: *public.as_bytes(),
+                                    vector_clock: clock_backend.lock().unwrap().clocks.clone(), // Send Local Clock
                                 };
                                 if let Ok(bytes) = bincode::serialize(&hello_msg) {
                                     if let Ok(pkt) = WirePacket::new_plain(
                                         id_loop.get_rotating_id(),
+                                        packet.header.sender_id.clone(),
                                         PacketType::Hello,
                                         &bytes,
                                         &id_loop.identity_key
@@ -175,8 +296,18 @@ fn run_async_backend(
                         PacketType::Hello => {
                             // Parse Payload
                             if let Ok(msg) = bincode::deserialize::<HandshakeMsg>(&packet.payload) {
-                                if let HandshakeMsg::Hello { pubkey: peer_pk_bytes, rotating_id, ephemeral_key: peer_ek_bytes } = msg {
+                                if let HandshakeMsg::Hello { pubkey: peer_pk_bytes, rotating_id, ephemeral_key: peer_ek_bytes, vector_clock: peer_clock } = msg {
                                     println!("👋 [Backend] Received Hello from {}! Reply Welcome...", rotating_id);
+                                    
+                                    // Merge Clocks (Passive Re-entry)
+                                    // If remote has newer clock, we might be stale.
+                                    // Merge remote clock into local.
+                                    {
+                                        let mut local_vc = clock_backend.lock().unwrap();
+                                        // TODO: Intelligent merge? Or just union-max?
+                                        local_vc.merge(&VectorClock { clocks: peer_clock.clone() });
+                                        println!("🕰️ [Backend] Merged VectorClock: {:?}", local_vc);
+                                    }
                                     
                                     // 1. Generate OUR Ephemeral Keys
                                     let (secret, public) = RingIdentity::generate_ephemeral_key();
@@ -192,8 +323,13 @@ fn run_async_backend(
                                         println!("🔑 [Backend-Server] Session Key Derived: {:?}...", &key_bytes[0..4]);
                                         // Store in Topology
                                         let session_key = ChaCha20Poly1305::new(&key_bytes.into());
-                                        topology.add_or_update(rotating_id.clone(), peer_pk_bytes, Some(session_key));
-                                        println!("🗂️ [Backend] Peer {} stored in Topology.", rotating_id);
+                                        topology.add_or_update(
+                                            rotating_id.clone(), 
+                                            peer_pk_bytes, 
+                                            Some(session_key),
+                                            Some((TransportType::Ble, None))
+                                        );
+                                        println!("🗂️ [Backend] Peer {} stored in Topology (BLE).", rotating_id);
                                     }
                                     
                                     // 4. Reply Welcome
@@ -201,10 +337,12 @@ fn run_async_backend(
                                         let welcome_msg = HandshakeMsg::Welcome {
                                             pubkey: id_loop.public_key.as_bytes().to_vec(),
                                             ephemeral_key: *public.as_bytes(),
+                                            vector_clock: clock_backend.lock().unwrap().clocks.clone(), // Send Updated Local Clock
                                         };
                                         if let Ok(bytes) = bincode::serialize(&welcome_msg) {
                                             if let Ok(reply) = WirePacket::new_plain(
                                                 id_loop.get_rotating_id(),
+                                                packet.header.sender_id.clone(),
                                                 PacketType::Welcome,
                                                 &bytes,
                                                 &id_loop.identity_key
@@ -218,8 +356,15 @@ fn run_async_backend(
                         },
                         PacketType::Welcome => {
                             if let Ok(msg) = bincode::deserialize::<HandshakeMsg>(&packet.payload) {
-                                 if let HandshakeMsg::Welcome { pubkey: _peer_pk_bytes, ephemeral_key: peer_ek_bytes } = msg {
+                                 if let HandshakeMsg::Welcome { pubkey: _peer_pk_bytes, ephemeral_key: peer_ek_bytes, vector_clock: peer_clock } = msg {
                                      println!("🤝 [Backend] Session ESTABLISHED! (Welcome received)");
+                                     
+                                     // Merge Clocks
+                                     {
+                                        let mut local_vc = clock_backend.lock().unwrap();
+                                        local_vc.merge(&VectorClock { clocks: peer_clock });
+                                        println!("🕰️ [Backend] VectorClock synced: {:?}", local_vc);
+                                     }
                                      
                                      // 1. Retrieve Pending Secret
                                      if let Some(secret) = pending_secret.take() {
@@ -242,8 +387,13 @@ fn run_async_backend(
                                             
                                             let peer_id = packet.header.sender_id.clone();
                                             let session_key = ChaCha20Poly1305::new(&key_bytes.into());
-                                            topology.add_or_update(peer_id.clone(), _peer_pk_bytes, Some(session_key));
-                                             println!("🗂️ [Backend] Peer {} stored in Topology.", peer_id);
+                                            topology.add_or_update(
+                                                peer_id.clone(), 
+                                                _peer_pk_bytes, 
+                                                Some(session_key),
+                                                Some((TransportType::Ble, None))
+                                            );
+                                             println!("🗂️ [Backend] Peer {} stored in Topology (BLE).", peer_id);
                                          }
                                      } else {
                                          println!("⚠️ [Backend] Received Welcome but no Pending Secret found!");

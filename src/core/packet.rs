@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use ed25519_dalek::{Verifier, Signature, SigningKey, VerifyingKey, Signer};
 use chacha20poly1305::{
@@ -11,6 +12,7 @@ use rand::{RngCore, thread_rng};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PacketHeader {
     pub sender_id: String,      // Public Key (Base64 or Hex representation)
+    pub receiver_id: String,    // Target Peer ID (or "broadcast")
     pub packet_type: PacketType,
     pub timestamp: u64,
     pub nonce: [u8; 12],        // Public Nonce for Encryption
@@ -32,10 +34,12 @@ pub enum HandshakeMsg {
         pubkey: Vec<u8>,
         rotating_id: String,
         ephemeral_key: [u8; 32],
+        vector_clock: HashMap<String, u64>,
     },
     Welcome {
         pubkey: Vec<u8>,
         ephemeral_key: [u8; 32],
+        vector_clock: HashMap<String, u64>,
     },
 }
 
@@ -51,6 +55,7 @@ impl WirePacket {
     /// Create a new secure packet
     pub fn new(
         sender_id: String,
+        receiver_id: String,
         packet_type: PacketType,
         payload_plain: &[u8],
         session_key: &ChaCha20Poly1305, // Symmetric Session Key
@@ -68,6 +73,7 @@ impl WirePacket {
         // 3. Create Header
         let header = PacketHeader {
             sender_id,
+            receiver_id,
             packet_type,
             timestamp: chrono::Utc::now().timestamp() as u64,
             nonce: nonce_bytes,
@@ -114,6 +120,7 @@ impl WirePacket {
     /// Create a plaintext packet (e.g. Handshake) - Signed but NOT Encrypted
     pub fn new_plain(
         sender_id: String,
+        receiver_id: String,
         packet_type: PacketType,
         payload_plain: &[u8],
         signing_key: &SigningKey,
@@ -128,6 +135,7 @@ impl WirePacket {
         // 3. Create Header
         let header = PacketHeader {
             sender_id,
+            receiver_id,
             packet_type,
             timestamp: chrono::Utc::now().timestamp() as u64,
             nonce: nonce_bytes,
