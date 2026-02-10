@@ -168,8 +168,8 @@ fn main() -> anyhow::Result<()> {
         
         // We need to pass rx_ble, not rx_out!
         let rt = tokio::runtime::Runtime::new()?;
-        use crate::transport::Transport;
-        use crate::transport::ble::windows;
+        use rust_clip::transport::Transport;
+        use rust_clip::transport::ble::windows;
 
         let ble_transport = windows::BleTransport::new(identity, tx_packet, Some(rx_ble));
 
