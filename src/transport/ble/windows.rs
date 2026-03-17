@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use crate::transport::{TransportEvent, TransportType};
+use crate::transport::ble::fragmentation::{self, Reassembler};
 use windows::core::{HSTRING, GUID};
 use windows::Devices::Bluetooth::Advertisement::*;
 use windows::Devices::Bluetooth::GenericAttributeProfile::*;
@@ -69,16 +70,19 @@ pub async fn start_ble_service(
     )?.await?;
     let write_char = write_result.Characteristic()?;
 
-    // WRITE handler: receive bytes and forward as TransportEvent
+    // WRITE handler: receive bytes, reassemble fragments, forward as TransportEvent
     let tx_write = event_tx.clone();
     let rt_handle = tokio::runtime::Handle::current();
+    let reassembler = Arc::new(Mutex::new(Reassembler::new()));
 
+    let reassembler_write = reassembler.clone();
     write_char.WriteRequested(&TypedEventHandler::new(
         move |_: &Option<GattLocalCharacteristic>, args: &Option<GattWriteRequestedEventArgs>| {
             if let Some(args) = args {
                 if let Ok(deferral) = args.GetDeferral() {
                     let args_clone = args.clone();
                     let tx = tx_write.clone();
+                    let reassembler = reassembler_write.clone();
                     rt_handle.spawn(async move {
                         if let Ok(op) = args_clone.GetRequestAsync() {
                             if let Ok(req) = op.await {
@@ -98,13 +102,21 @@ pub async fn start_ble_service(
                                     None
                                 };
 
-                                if let Some(bytes) = bytes_opt {
-                                    println!("  [BLE-Win] Server received {} bytes", bytes.len());
-                                    let _ = tx.send(TransportEvent::PacketReceived {
-                                        data: bytes,
-                                        from_transport: TransportType::Ble,
-                                        from_addr: None,
-                                    });
+                                if let Some(fragment_bytes) = bytes_opt {
+                                    // Feed to reassembler
+                                    let complete = {
+                                        let mut r = reassembler.lock().unwrap();
+                                        r.feed(&fragment_bytes)
+                                    };
+
+                                    if let Some(data) = complete {
+                                        println!("  [BLE-Win] Server received {} bytes", data.len());
+                                        let _ = tx.send(TransportEvent::PacketReceived {
+                                            data,
+                                            from_transport: TransportType::Ble,
+                                            from_addr: None,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -226,7 +238,7 @@ pub async fn start_ble_service(
     watcher.Start()?;
     println!("  [BLE-Win] Client scanning.");
 
-    // --- SEND LOOP: Swarm → BLE ---
+    // --- SEND LOOP: Swarm → BLE (with fragmentation) ---
     let state_sender = client_state.clone();
     tokio::spawn(async move {
         println!("  [BLE-Win] Send loop started.");
@@ -237,18 +249,29 @@ pub async fn start_ble_service(
             };
 
             if let Some(ch) = char_opt {
-                println!("  [BLE-Win] Sending {} bytes", bytes.len());
-                if let Ok(writer) = DataWriter::new() {
-                    let _ = writer.WriteBytes(&bytes);
-                    let op = if let Ok(buffer) = writer.DetachBuffer() {
-                        ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse).ok()
-                    } else {
-                        None
-                    };
-                    if let Some(op) = op {
-                        if let Ok(status) = op.await {
-                            if status != GattCommunicationStatus::Success {
-                                println!("  [BLE-Win] Send failed: {:?}", status);
+                let packet_id = fragmentation::next_packet_id();
+                let fragments = fragmentation::fragment(&bytes, packet_id);
+                let frag_count = fragments.len();
+
+                if frag_count > 1 {
+                    println!("  [BLE-Win] Sending {} bytes in {} fragments", bytes.len(), frag_count);
+                } else {
+                    println!("  [BLE-Win] Sending {} bytes", bytes.len());
+                }
+
+                for frag in &fragments {
+                    if let Ok(writer) = DataWriter::new() {
+                        let _ = writer.WriteBytes(frag);
+                        let op = if let Ok(buffer) = writer.DetachBuffer() {
+                            ch.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse).ok()
+                        } else {
+                            None
+                        };
+                        if let Some(op) = op {
+                            if let Ok(status) = op.await {
+                                if status != GattCommunicationStatus::Success {
+                                    println!("  [BLE-Win] Fragment send failed: {:?}", status);
+                                }
                             }
                         }
                     }

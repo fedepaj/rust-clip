@@ -1,3 +1,5 @@
+pub mod fragmentation;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

@@ -1,7 +1,8 @@
 use anyhow::Result;
 use crate::transport::{TransportEvent, TransportType};
+use crate::transport::ble::fragmentation::{self, Reassembler};
 use flume::Sender;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Mutex};
 
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, rc::Retained, MainThreadOnly, sel, Message};
@@ -28,6 +29,7 @@ const WRITE_CHAR_UUID: &str = "99999999-0000-0000-0000-000000000003";
 // SEND_RX: Swarm → BLE (raw bytes to send to connected peer)
 static EVENT_TX: OnceLock<Sender<TransportEvent>> = OnceLock::new();
 static SEND_RX: OnceLock<flume::Receiver<Vec<u8>>> = OnceLock::new();
+static REASSEMBLER: OnceLock<Mutex<Reassembler>> = OnceLock::new();
 
 thread_local! {
     static CONNECTED_PERIPHERAL: RefCell<Option<Retained<CBPeripheral>>> = RefCell::new(None);
@@ -48,7 +50,17 @@ define_class!(
         fn tick(&self, _timer: &NSTimer) {
             if let Some(rx) = SEND_RX.get() {
                 while let Ok(data) = rx.try_recv() {
-                    self.send_raw_bytes(&data);
+                    let packet_id = fragmentation::next_packet_id();
+                    let fragments = fragmentation::fragment(&data, packet_id);
+                    let frag_count = fragments.len();
+                    if frag_count > 1 {
+                        println!("  [BLE-Mac] Sending {} bytes in {} fragments", data.len(), frag_count);
+                    } else {
+                        println!("  [BLE-Mac] Sending {} bytes", data.len());
+                    }
+                    for frag in &fragments {
+                        self.send_raw_bytes(frag);
+                    }
                 }
             }
         }
@@ -86,15 +98,22 @@ define_class!(
                         let len: usize = msg_send![&*data, length];
                         let slice = std::slice::from_raw_parts(ptr.cast::<u8>(), len);
 
-                        println!("  [BLE-Mac] Server received {} bytes", len);
+                        // Feed fragment to reassembler
+                        let reassembler = REASSEMBLER.get_or_init(|| Mutex::new(Reassembler::new()));
+                        let complete = {
+                            let mut r = reassembler.lock().unwrap();
+                            r.feed(slice)
+                        };
 
-                        // Forward raw bytes as TransportEvent::PacketReceived
-                        if let Some(tx) = EVENT_TX.get() {
-                            let _ = tx.send(TransportEvent::PacketReceived {
-                                data: slice.to_vec(),
-                                from_transport: TransportType::Ble,
-                                from_addr: None,
-                            });
+                        if let Some(data) = complete {
+                            println!("  [BLE-Mac] Server received {} bytes", data.len());
+                            if let Some(tx) = EVENT_TX.get() {
+                                let _ = tx.send(TransportEvent::PacketReceived {
+                                    data,
+                                    from_transport: TransportType::Ble,
+                                    from_addr: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -201,6 +220,7 @@ impl BleDelegate {
     ) -> Retained<Self> {
         let _ = EVENT_TX.set(event_tx);
         let _ = SEND_RX.set(send_rx);
+        let _ = REASSEMBLER.set(Mutex::new(Reassembler::new()));
 
         let this: Retained<BleDelegate> = unsafe { msg_send![mtm.alloc(), init] };
 
@@ -272,7 +292,6 @@ impl BleDelegate {
                     if let Some(ch) = c.borrow().as_ref() {
                         unsafe {
                             let data = objc2_foundation::NSData::with_bytes(bytes);
-                            println!("  [BLE-Mac] Sending {} bytes", bytes.len());
                             peer.writeValue_forCharacteristic_type(
                                 &data,
                                 ch,

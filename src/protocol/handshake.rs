@@ -37,6 +37,7 @@ pub enum HandshakeResult {
     SessionEstablished {
         peer_id: String,
         peer_pubkey: Vec<u8>,
+        peer_rotating_id: String,
         session_key: ChaCha20Poly1305,
         transport: TransportType,
         /// If we're the responder (received Hello), this is the Welcome packet to send back
@@ -80,6 +81,7 @@ impl HandshakeManager {
             ephemeral_pubkey: *public.as_bytes(),
             timestamp,
             signature: inner_sig.to_bytes().to_vec(),
+            rotating_id: identity.get_rotating_id(),
         };
 
         let payload_bytes = bincode::serialize(&hello)?;
@@ -116,9 +118,9 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Failed to deserialize Hello: {}", e)),
         };
 
-        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes) = match hello {
-            HandshakePayload::Hello { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature } => {
-                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature)
+        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes, peer_rotating_id) = match hello {
+            HandshakePayload::Hello { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id } => {
+                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id)
             }
             _ => return HandshakeResult::Failed("Expected Hello payload".to_string()),
         };
@@ -184,6 +186,7 @@ impl HandshakeManager {
             ephemeral_pubkey: *public.as_bytes(),
             timestamp: our_timestamp,
             signature: our_inner_sig.to_bytes().to_vec(),
+            rotating_id: identity.get_rotating_id(),
         };
 
         let payload_bytes = match bincode::serialize(&welcome) {
@@ -207,6 +210,7 @@ impl HandshakeManager {
         HandshakeResult::SessionEstablished {
             peer_id: peer_stable_id,
             peer_pubkey: peer_pubkey_bytes,
+            peer_rotating_id,
             session_key,
             transport: TransportType::Ble,
             reply_packet: Some(reply),
@@ -225,9 +229,9 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Failed to deserialize Welcome: {}", e)),
         };
 
-        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes) = match welcome {
-            HandshakePayload::Welcome { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature } => {
-                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature)
+        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes, peer_rotating_id) = match welcome {
+            HandshakePayload::Welcome { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id } => {
+                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id)
             }
             _ => return HandshakeResult::Failed("Expected Welcome payload".to_string()),
         };
@@ -299,6 +303,7 @@ impl HandshakeManager {
         HandshakeResult::SessionEstablished {
             peer_id: peer_stable_id,
             peer_pubkey: peer_pubkey_bytes,
+            peer_rotating_id,
             session_key,
             transport: TransportType::Ble,
             reply_packet: None, // Client doesn't need to reply

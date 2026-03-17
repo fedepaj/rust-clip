@@ -62,6 +62,7 @@ pub enum HandshakePayload {
         ephemeral_pubkey: [u8; 32],
         timestamp: u64,
         signature: Vec<u8>,  // Ed25519 signature of {stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp}
+        rotating_id: String, // mDNS rotating ID for LAN correlation
     },
     Welcome {
         stable_peer_id: String,
@@ -69,6 +70,7 @@ pub enum HandshakePayload {
         ephemeral_pubkey: [u8; 32],
         timestamp: u64,
         signature: Vec<u8>,
+        rotating_id: String,
     },
 }
 

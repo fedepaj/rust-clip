@@ -276,16 +276,33 @@ impl Swarm {
         udp_transport: &Option<crate::transport::lan::udp::UdpTransport>,
     ) {
         match result {
-            HandshakeResult::SessionEstablished { peer_id, peer_pubkey, session_key, reply_packet, .. } => {
-                println!("  [Swarm] Session established with {}", peer_id);
+            HandshakeResult::SessionEstablished { peer_id, peer_pubkey, peer_rotating_id, session_key, reply_packet, .. } => {
+                println!("  [Swarm] Session established with {} (rotating: {})", peer_id, &peer_rotating_id);
 
-                // Store in topology
+                // Store in topology with the transport we received this handshake from
                 self.topology.add_or_update(
                     peer_id.clone(),
                     peer_pubkey,
                     Some(session_key),
                     Some((from_transport.clone(), from_addr)),
                 );
+
+                // Correlate with mDNS: if peer's rotating_id is in topology with LAN info, merge it
+                if let Some(mdns_entry) = self.topology.peers.get(&peer_rotating_id) {
+                    if let Some(lan_status) = mdns_entry.transports.get(&TransportType::Mdns) {
+                        if lan_status.is_active {
+                            let lan_addr = lan_status.addr;
+                            // Add LAN transport to the StablePeerId entry
+                            self.topology.add_or_update(
+                                peer_id.clone(),
+                                vec![],
+                                None, // Don't overwrite session key
+                                Some((TransportType::Mdns, lan_addr)),
+                            );
+                            println!("  [Swarm] Merged LAN transport for {} (addr: {:?})", &peer_id[..8], lan_addr);
+                        }
+                    }
+                }
 
                 // Merge vector clocks
                 self.vector_clock.increment(self.identity.stable_peer_id().to_string());
@@ -413,8 +430,8 @@ fn clipboard_monitor(
 
         last_text = text.clone();
 
-        // Count peers with session keys
-        let mut sent_count = 0u32;
+        // Send to all peers with session keys
+        let mut sent_via: Vec<(String, TransportType)> = Vec::new();
         for entry in topology.peers.iter() {
             let peer_id = entry.key().clone();
             let peer = entry.value();
@@ -441,11 +458,12 @@ fn clipboard_monitor(
 
             // Route via best transport for this peer
             if let Some((transport_type, addr)) = peer.get_best_transport() {
+                let used_transport = transport_type.clone();
                 match (transport_type, addr) {
                     (TransportType::Mdns | TransportType::TcpDirect, Some(socket_addr)) => {
                         if let Some(ref udp) = udp_transport {
                             if udp.send(socket_addr, &packet).is_ok() {
-                                sent_count += 1;
+                                sent_via.push((peer_id, used_transport));
                             }
                         }
                     }
@@ -453,7 +471,7 @@ fn clipboard_monitor(
                         if let Ok(data) = bincode::serialize(&packet) {
                             if let Some(ref tx) = ble_send_tx {
                                 if tx.send(data).is_ok() {
-                                    sent_count += 1;
+                                    sent_via.push((peer_id, used_transport));
                                 }
                             }
                         }
@@ -464,15 +482,17 @@ fn clipboard_monitor(
                 // Fallback to BLE
                 if let Ok(data) = bincode::serialize(&packet) {
                     if tx.send(data).is_ok() {
-                        sent_count += 1;
+                        sent_via.push((peer_id, TransportType::Ble));
                     }
                 }
             }
         }
 
-        if sent_count > 0 {
+        if !sent_via.is_empty() {
             let short = if text.len() > 40 { format!("{}...", &text[..40]) } else { text.clone() };
-            println!("  [Clipboard] Sent to {} peer(s): \"{}\"", sent_count, short);
+            for (pid, transport) in &sent_via {
+                println!("  [Clipboard] Sent to {} via {:?}: \"{}\"", &pid[..8], transport, short);
+            }
         }
     }
 }
