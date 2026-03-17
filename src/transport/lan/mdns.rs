@@ -1,8 +1,7 @@
 use mdns_sd::{ServiceDaemon, ServiceInfo, ServiceEvent};
 use std::thread;
-use std::time::Duration;
 use crate::core::identity::RingIdentity;
-use crate::transport::{PeerId, TransportType};
+use crate::transport::TransportType;
 use crate::mesh::topology::Topology;
 use std::net::{IpAddr, SocketAddr};
 

@@ -4052,6 +4052,7 @@ dependencies = [
  "windows 0.52.0",
  "winres",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

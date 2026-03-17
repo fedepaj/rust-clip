@@ -19,12 +19,17 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 // Type alias per HMAC-SHA256
 type HmacSha256 = Hmac<Sha256>;
 
+/// Stable peer identifier — SHA-256 of Ed25519 public key, truncated to 20 bytes, hex-encoded.
+/// This never changes for a given identity and is the canonical routing identifier.
+pub type StablePeerId = String;
+
 #[derive(Clone, Debug)]
 pub struct RingIdentity {
     pub mnemonic: String,
     pub identity_key: SigningKey, // Ed25519 Private Key
     pub public_key: VerifyingKey, // Ed25519 Public Key
     root_secret: [u8; 32],        // Derived from Mnemonic
+    stable_peer_id: StablePeerId, // Cached stable ID
 }
 
 #[derive(Serialize, Deserialize)]
@@ -72,11 +77,15 @@ impl RingIdentity {
         hkdf.expand(b"root_secret_v1", &mut root_secret)
             .map_err(|_| anyhow!("HKDF expansion failed for Root Secret"))?;
 
+        // 4. Compute stable peer ID
+        let stable_peer_id = Self::compute_stable_peer_id(&verifying_key);
+
         Ok(RingIdentity {
             mnemonic: phrase.to_string(),
             identity_key: signing_key,
             public_key: verifying_key,
             root_secret,
+            stable_peer_id,
         })
     }
 
@@ -119,6 +128,29 @@ impl RingIdentity {
         let secret = EphemeralSecret::random_from_rng(thread_rng());
         let public = PublicKey::from(&secret);
         (secret, public)
+    }
+
+    /// Stable peer ID: SHA-256 of Ed25519 public key, truncated to 20 bytes, hex-encoded.
+    /// Never changes for a given identity. Used for routing.
+    pub fn stable_peer_id(&self) -> &str {
+        &self.stable_peer_id
+    }
+
+    /// Compute stable peer ID from a verifying key
+    pub fn compute_stable_peer_id(pubkey: &VerifyingKey) -> StablePeerId {
+        use sha2::Digest;
+        let hash = Sha256::digest(pubkey.as_bytes());
+        hex::encode(&hash[..20])
+    }
+
+    /// Compute stable peer ID from raw public key bytes
+    pub fn stable_peer_id_from_bytes(pubkey_bytes: &[u8]) -> Option<StablePeerId> {
+        if pubkey_bytes.len() != 32 {
+            return None;
+        }
+        let bytes: [u8; 32] = pubkey_bytes.try_into().ok()?;
+        let vk = VerifyingKey::from_bytes(&bytes).ok()?;
+        Some(Self::compute_stable_peer_id(&vk))
     }
 
     // --- PERSISTENZA (Cifratura AES-GCM del Local Store) ---

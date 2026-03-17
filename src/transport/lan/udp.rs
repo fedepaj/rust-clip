@@ -2,8 +2,8 @@ use anyhow::{Result, Context};
 use std::net::{UdpSocket, SocketAddr};
 use std::sync::Arc;
 use flume::Sender;
-use crate::core::packet::{WirePacket, PacketType};
-use crate::transport::TransportType;
+use crate::core::packet::WirePacket;
+use crate::transport::{TransportEvent, TransportType};
 
 #[derive(Clone)]
 pub struct UdpTransport {
@@ -76,6 +76,36 @@ impl UdpTransport {
             }
         });
         
+        Ok(())
+    }
+
+    /// Start listening and forward as TransportEvents (new API)
+    pub fn start_with_events(&self, event_tx: Sender<TransportEvent>) -> Result<()> {
+        let socket = self.socket.clone();
+
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 65535];
+            loop {
+                match socket.recv_from(&mut buf) {
+                    Ok((amt, src)) => {
+                        let data = buf[..amt].to_vec();
+                        if let Err(e) = event_tx.send(TransportEvent::PacketReceived {
+                            data,
+                            from_transport: TransportType::Mdns,
+                            from_addr: Some(src),
+                        }) {
+                            println!("  [UDP] Failed to forward event: {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        println!("  [UDP] Receive error: {}", e);
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+        });
+
         Ok(())
     }
 

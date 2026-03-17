@@ -1,40 +1,95 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use std::net::SocketAddr;
-use crate::core::packet::WirePacket;
 
 pub mod ble;
 pub mod lan;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PeerId(pub String); // Usually the Ed25519 Public Key (Hex/Base64)
+// --- Transport Types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum TransportType {
-    Mdns,
     Ble,
-    TcpDirect,
+    Mdns,      // LAN UDP (discovered via mDNS)
+    TcpDirect, // Direct TCP connection
+    Hotspot,   // WiFi hotspot (ephemeral)
 }
+
+impl TransportType {
+    /// Base bandwidth score for transport selection.
+    /// Higher = faster. Used to pick the best route.
+    pub fn bandwidth_score(&self) -> u32 {
+        match self {
+            TransportType::TcpDirect => 1000,
+            TransportType::Mdns => 800,
+            TransportType::Hotspot => 600,
+            TransportType::Ble => 10,
+        }
+    }
+}
+
+// --- Transport Events ---
+// All transports produce these events into a unified channel.
+// The Swarm consumes them.
 
 #[derive(Debug, Clone)]
-pub struct Peer {
-    pub id: PeerId,
-    pub name: String,
-    pub transport_type: TransportType,
-    pub address: Option<SocketAddr>, // For TCP/LAN
-    pub is_active: bool,
-    pub last_seen: u64, // Unix Timestamp
+pub enum TransportEvent {
+    /// A new peer was discovered (e.g., via mDNS or BLE scan)
+    PeerDiscovered {
+        peer_id: String,
+        transport: TransportType,
+        addr: Option<SocketAddr>,
+    },
+    /// A peer is no longer reachable
+    PeerLost {
+        peer_id: String,
+        transport: TransportType,
+    },
+    /// Raw bytes received from a transport
+    PacketReceived {
+        data: Vec<u8>,
+        from_transport: TransportType,
+        from_addr: Option<SocketAddr>,
+    },
+    /// A transport-level link is established (e.g., BLE GATT connected)
+    LinkEstablished {
+        peer_id: String,
+        transport: TransportType,
+    },
+    /// Transport error
+    Error {
+        transport: TransportType,
+        error: String,
+    },
 }
 
-#[async_trait]
+// --- Transport Address ---
+// Where to send data for a specific transport
+
+#[derive(Debug, Clone)]
+pub enum TransportAddr {
+    /// IP:Port for UDP/TCP
+    Socket(SocketAddr),
+    /// BLE peer identifier (platform-specific, opaque)
+    BlePeer(String),
+}
+
+// --- Transport Trait ---
+// Transports deal in raw bytes. Packet serialization is handled by the Swarm.
+
 pub trait Transport: Send + Sync {
-    /// Start the transport listener/advertiser
-    async fn start(&self) -> Result<()>;
+    /// What kind of transport this is
+    fn transport_type(&self) -> TransportType;
 
-    /// Send a secure packet to a specific peer
-    async fn send(&self, peer_id: &PeerId, packet: WirePacket) -> Result<()>;
+    /// Start the transport. It should begin producing TransportEvents.
+    fn start(&self, event_tx: flume::Sender<TransportEvent>) -> Result<()>;
 
-    /// Broadcast a packet to all reachable peers (Best Effort)
-    async fn broadcast(&self, packet: WirePacket) -> Result<()>;
+    /// Send raw bytes to a specific address
+    fn send_to(&self, addr: &TransportAddr, data: &[u8]) -> Result<()>;
+
+    /// Broadcast raw bytes to all reachable peers (best effort)
+    fn broadcast(&self, data: &[u8]) -> Result<()>;
+
+    /// Maximum payload size for a single send (BLE ~500, UDP ~65000, TCP unlimited)
+    fn max_payload_size(&self) -> usize;
 }
