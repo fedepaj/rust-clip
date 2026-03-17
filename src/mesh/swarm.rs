@@ -1,10 +1,12 @@
 use anyhow::Result;
+use std::sync::{Arc, Mutex};
 
 use crate::core::identity::RingIdentity;
 use crate::core::packet::{WirePacket, PacketType};
 use crate::mesh::topology::Topology;
 use crate::mesh::gossip::{VectorClock, PacketCache};
 use crate::mesh::router::Router;
+use crate::protocol::clipboard_sync::ClipboardSync;
 use crate::protocol::handshake::{HandshakeManager, HandshakeResult};
 use crate::transport::{TransportEvent, TransportType, TransportAddr, Transport};
 
@@ -19,6 +21,7 @@ pub struct Swarm {
     handshake_mgr: HandshakeManager,
     packet_cache: PacketCache,
     vector_clock: VectorClock,
+    clipboard_sync: Arc<Mutex<ClipboardSync>>,
     event_rx: flume::Receiver<TransportEvent>,
     event_tx: flume::Sender<TransportEvent>,
 }
@@ -33,6 +36,7 @@ impl Swarm {
             handshake_mgr: HandshakeManager::new(),
             packet_cache: PacketCache::new(200),
             vector_clock: VectorClock::new(),
+            clipboard_sync: Arc::new(Mutex::new(ClipboardSync::new())),
             event_rx,
             event_tx,
         }
@@ -63,6 +67,18 @@ impl Swarm {
             if let Err(e) = transport.start(self.event_tx.clone()) {
                 println!("  [Swarm] Transport {:?} failed to start: {}", transport.transport_type(), e);
             }
+        }
+
+        // Start clipboard monitor
+        {
+            let identity = self.identity.clone();
+            let topology = self.topology.clone();
+            let clip_sync = self.clipboard_sync.clone();
+            let monitor_ble_tx = ble_send_tx.clone();
+            let monitor_udp = udp_transport.clone();
+            std::thread::spawn(move || {
+                clipboard_monitor(identity, topology, clip_sync, monitor_ble_tx, monitor_udp);
+            });
         }
 
         // Main event loop
@@ -178,8 +194,59 @@ impl Swarm {
             }
 
             PacketType::ClipboardText => {
-                println!("  [Swarm] Clipboard data received ({} bytes)", packet.payload.len());
-                // TODO: Decrypt and apply clipboard
+                let sender_id = packet.header.sender_id.clone();
+
+                // Get session key for sender
+                let session_key = match self.topology.get_session_key(&sender_id) {
+                    Some(k) => k,
+                    None => {
+                        println!("  [Swarm] No session key for {}, dropping clipboard", sender_id);
+                        return;
+                    }
+                };
+
+                // Decrypt
+                let plaintext = match packet.decrypt_payload(&session_key) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        println!("  [Swarm] Clipboard decrypt failed from {}: {}", sender_id, e);
+                        return;
+                    }
+                };
+
+                // Convert to text
+                let text = match String::from_utf8(plaintext) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        println!("  [Swarm] Invalid UTF-8 in clipboard data");
+                        return;
+                    }
+                };
+
+                // Dedup check
+                let should_apply = {
+                    let mut sync = self.clipboard_sync.lock().unwrap();
+                    sync.apply_remote(text.as_bytes(), &sender_id, my_id)
+                };
+
+                if !should_apply {
+                    return;
+                }
+
+                let short = if text.len() > 40 { format!("{}...", &text[..40]) } else { text.clone() };
+                println!("  [Clipboard] Received from {}: \"{}\"", &sender_id[..8], short);
+
+                // Apply to local clipboard in a separate thread (arboard may block)
+                std::thread::spawn(move || {
+                    match arboard::Clipboard::new() {
+                        Ok(mut cb) => {
+                            if let Err(e) = cb.set_text(&text) {
+                                println!("  [Clipboard] Failed to set: {}", e);
+                            }
+                        }
+                        Err(e) => println!("  [Clipboard] Failed to open: {}", e),
+                    }
+                });
             }
 
             PacketType::RevocationNotice => {
@@ -297,6 +364,115 @@ impl Swarm {
             _ => {
                 println!("  [Swarm] Unsupported transport/addr combination");
             }
+        }
+    }
+}
+
+/// Background thread that monitors local clipboard and sends encrypted updates to all peers.
+fn clipboard_monitor(
+    identity: RingIdentity,
+    topology: Topology,
+    clipboard_sync: Arc<Mutex<ClipboardSync>>,
+    ble_send_tx: Option<flume::Sender<Vec<u8>>>,
+    udp_transport: Option<crate::transport::lan::udp::UdpTransport>,
+) {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  [Clipboard] Failed to open: {}", e);
+            return;
+        }
+    };
+
+    // Pre-fill with current content to avoid sending on startup
+    let mut last_text = clipboard.get_text().unwrap_or_default();
+    println!("  [Clipboard] Monitor started");
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let text = match clipboard.get_text() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        if text.is_empty() || text == last_text {
+            continue;
+        }
+
+        let my_id = identity.stable_peer_id();
+        let should_send = {
+            let mut sync = clipboard_sync.lock().unwrap();
+            sync.should_propagate(text.as_bytes(), my_id)
+        };
+
+        if !should_send {
+            last_text = text;
+            continue;
+        }
+
+        last_text = text.clone();
+
+        // Count peers with session keys
+        let mut sent_count = 0u32;
+        for entry in topology.peers.iter() {
+            let peer_id = entry.key().clone();
+            let peer = entry.value();
+
+            let session_key = match peer.session_key {
+                Some(ref k) => k,
+                None => continue,
+            };
+
+            let packet = match WirePacket::new_encrypted(
+                my_id.to_string(),
+                peer_id.clone(),
+                PacketType::ClipboardText,
+                text.as_bytes(),
+                session_key,
+                &identity.identity_key,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("  [Clipboard] Encrypt failed for {}: {}", &peer_id[..8], e);
+                    continue;
+                }
+            };
+
+            // Route via best transport for this peer
+            if let Some((transport_type, addr)) = peer.get_best_transport() {
+                match (transport_type, addr) {
+                    (TransportType::Mdns | TransportType::TcpDirect, Some(socket_addr)) => {
+                        if let Some(ref udp) = udp_transport {
+                            if udp.send(socket_addr, &packet).is_ok() {
+                                sent_count += 1;
+                            }
+                        }
+                    }
+                    (TransportType::Ble, _) => {
+                        if let Ok(data) = bincode::serialize(&packet) {
+                            if let Some(ref tx) = ble_send_tx {
+                                if tx.send(data).is_ok() {
+                                    sent_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else if let Some(ref tx) = ble_send_tx {
+                // Fallback to BLE
+                if let Ok(data) = bincode::serialize(&packet) {
+                    if tx.send(data).is_ok() {
+                        sent_count += 1;
+                    }
+                }
+            }
+        }
+
+        if sent_count > 0 {
+            let short = if text.len() > 40 { format!("{}...", &text[..40]) } else { text.clone() };
+            println!("  [Clipboard] Sent to {} peer(s): \"{}\"", sent_count, short);
         }
     }
 }
