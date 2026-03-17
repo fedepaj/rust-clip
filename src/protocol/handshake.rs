@@ -35,12 +35,14 @@ pub struct HandshakeManager {
 pub enum HandshakeResult {
     /// Send this packet to the remote peer
     SendPacket(WirePacket),
-    /// Handshake completed, here's the session key
+    /// Handshake completed, here's the session key (+ optional reply to send)
     SessionEstablished {
         peer_id: String,
         peer_pubkey: Vec<u8>,
         session_key: ChaCha20Poly1305,
         transport: TransportType,
+        /// If we're the responder (received Hello), this is the Welcome packet to send back
+        reply_packet: Option<WirePacket>,
     },
     /// Handshake failed
     Failed(String),
@@ -191,7 +193,7 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Serialize Welcome failed: {}", e)),
         };
 
-        let _reply = match WirePacket::new_plain(
+        let reply = match WirePacket::new_plain(
             identity.stable_peer_id().to_string(),
             peer_stable_id.clone(),
             PacketType::Welcome,
@@ -202,37 +204,16 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Create Welcome packet failed: {}", e)),
         };
 
-        // Mark as complete
         self.pending.insert(peer_stable_id.clone(), HandshakeState::Complete);
-
-        // First send the Welcome, then report session established
-        // We return SendPacket — the caller should also store the session key
-        // Actually, let's return SessionEstablished which includes the reply packet
-        // We need a new variant for this... or we can have the caller handle it.
-        // Let's keep it simple: return the session info, and expect the caller to also send the reply.
-
-        // Actually, we need both. Let's store the reply in the result.
-        // For now, the caller can handle it by checking the result.
-
-        // Return session established — the caller sends the Welcome and stores the key
         println!("  [Handshake] Hello processed from {}. Session key derived.", peer_stable_id);
 
-        // We want to return both the reply packet AND the session key.
-        // Let's make SendPacket carry an optional session key.
         HandshakeResult::SessionEstablished {
             peer_id: peer_stable_id,
             peer_pubkey: peer_pubkey_bytes,
             session_key,
-            transport: TransportType::Ble, // Will be overridden by caller
+            transport: TransportType::Ble,
+            reply_packet: Some(reply),
         }
-    }
-
-    /// Get the Welcome reply packet for a completed handshake.
-    /// Called after process_hello returns SessionEstablished.
-    pub fn get_welcome_packet(&self, _identity: &RingIdentity, _peer_id: &str) -> Option<WirePacket> {
-        // This is a convenience — the Welcome was already created in process_hello.
-        // We could cache it, but for simplicity the caller should use the result directly.
-        None // The caller already has the info from process_hello to create one
     }
 
     /// Process an incoming Welcome packet (we initiated the handshake).
@@ -254,16 +235,15 @@ impl HandshakeManager {
             _ => return HandshakeResult::Failed("Expected Welcome payload".to_string()),
         };
 
-        // Retrieve pending state
-        let state = match self.pending.remove(&peer_stable_id) {
+        // Retrieve pending state — try peer_stable_id, then sender_id, then "broadcast"
+        // (when we initiated via LinkEstablished, we didn't know the peer's ID)
+        let state = self.pending.remove(&peer_stable_id)
+            .or_else(|| self.pending.remove(&packet.header.sender_id))
+            .or_else(|| self.pending.remove("broadcast"));
+
+        let state = match state {
             Some(s) => s,
-            None => {
-                // Maybe from sender_id in header?
-                match self.pending.remove(&packet.header.sender_id) {
-                    Some(s) => s,
-                    None => return HandshakeResult::Failed(format!("No pending handshake for {}", peer_stable_id)),
-                }
-            }
+            None => return HandshakeResult::Failed(format!("No pending handshake for {}", peer_stable_id)),
         };
 
         let ephemeral_secret = match state {
@@ -326,7 +306,8 @@ impl HandshakeManager {
             peer_id: peer_stable_id,
             peer_pubkey: peer_pubkey_bytes,
             session_key,
-            transport: TransportType::Ble, // Will be overridden by caller
+            transport: TransportType::Ble,
+            reply_packet: None, // Client doesn't need to reply
         }
     }
 

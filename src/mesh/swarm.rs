@@ -96,10 +96,11 @@ impl Swarm {
                 );
             }
 
-            TransportEvent::LinkEstablished { peer_id, transport } => {
-                println!("  [Swarm] Link established with {} via {:?}. Initiating handshake...", peer_id, transport);
-                // Initiate handshake
-                match self.handshake_mgr.initiate(&self.identity, &peer_id) {
+            TransportEvent::LinkEstablished { peer_id: _, transport } => {
+                println!("  [Swarm] Link established via {:?}. Sending Hello broadcast...", transport);
+                // We don't know the remote peer_id yet — send Hello as broadcast.
+                // The remote will learn our identity from the Hello payload and respond with Welcome.
+                match self.handshake_mgr.initiate(&self.identity, "broadcast") {
                     Ok(hello_packet) => {
                         self.send_packet(hello_packet, Some(transport), ble_send_tx, udp_transport);
                     }
@@ -208,7 +209,7 @@ impl Swarm {
         udp_transport: &Option<crate::transport::lan::udp::UdpTransport>,
     ) {
         match result {
-            HandshakeResult::SessionEstablished { peer_id, peer_pubkey, session_key, .. } => {
+            HandshakeResult::SessionEstablished { peer_id, peer_pubkey, session_key, reply_packet, .. } => {
                 println!("  [Swarm] Session established with {}", peer_id);
 
                 // Store in topology
@@ -222,13 +223,10 @@ impl Swarm {
                 // Merge vector clocks
                 self.vector_clock.increment(self.identity.stable_peer_id().to_string());
 
-                // If we were the responder (Hello received), send Welcome
-                // The process_hello already built the Welcome internally,
-                // but we need to actually create and send it.
-                // This is handled by the fact that process_hello logs session,
-                // and the caller (process_packet for Hello) should build the Welcome.
-                // Let's build it here.
-                self.send_welcome_reply(&peer_id, from_transport, ble_send_tx, udp_transport);
+                // If we were the responder, send the Welcome reply
+                if let Some(reply) = reply_packet {
+                    self.send_packet(reply, Some(from_transport), ble_send_tx, udp_transport);
+                }
             }
             HandshakeResult::SendPacket(packet) => {
                 self.send_packet(packet, Some(from_transport), ble_send_tx, udp_transport);
@@ -237,45 +235,6 @@ impl Swarm {
                 println!("  [Swarm] Handshake failed: {}", reason);
             }
             HandshakeResult::Ignored => {}
-        }
-    }
-
-    fn send_welcome_reply(
-        &self,
-        peer_id: &str,
-        transport: TransportType,
-        ble_send_tx: &Option<flume::Sender<Vec<u8>>>,
-        udp_transport: &Option<crate::transport::lan::udp::UdpTransport>,
-    ) {
-        // Build a Welcome packet
-        let (_secret, public) = RingIdentity::generate_ephemeral_key();
-        let timestamp = chrono::Utc::now().timestamp() as u64;
-
-        let mut sign_data = Vec::new();
-        sign_data.extend_from_slice(self.identity.stable_peer_id().as_bytes());
-        sign_data.extend_from_slice(self.identity.public_key.as_bytes());
-        sign_data.extend_from_slice(public.as_bytes());
-        sign_data.extend_from_slice(&timestamp.to_le_bytes());
-        let inner_sig = self.identity.sign(&sign_data);
-
-        let welcome = crate::core::packet::HandshakePayload::Welcome {
-            stable_peer_id: self.identity.stable_peer_id().to_string(),
-            ed25519_pubkey: self.identity.public_key.as_bytes().to_vec(),
-            ephemeral_pubkey: *public.as_bytes(),
-            timestamp,
-            signature: inner_sig.to_bytes().to_vec(),
-        };
-
-        if let Ok(payload_bytes) = bincode::serialize(&welcome) {
-            if let Ok(packet) = WirePacket::new_plain(
-                self.identity.stable_peer_id().to_string(),
-                peer_id.to_string(),
-                PacketType::Welcome,
-                &payload_bytes,
-                &self.identity.identity_key,
-            ) {
-                self.send_packet(packet, Some(transport), ble_send_tx, udp_transport);
-            }
         }
     }
 
