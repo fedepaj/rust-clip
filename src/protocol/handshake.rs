@@ -22,8 +22,6 @@ enum HandshakeState {
         ephemeral_secret: EphemeralSecret,
         initiated_at: Instant,
     },
-    /// Handshake completed
-    Complete,
 }
 
 /// Manages concurrent handshakes with multiple peers
@@ -204,7 +202,6 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Create Welcome packet failed: {}", e)),
         };
 
-        self.pending.insert(peer_stable_id.clone(), HandshakeState::Complete);
         println!("  [Handshake] Hello processed from {}. Session key derived.", peer_stable_id);
 
         HandshakeResult::SessionEstablished {
@@ -253,7 +250,6 @@ impl HandshakeManager {
                 }
                 ephemeral_secret
             }
-            HandshakeState::Complete => return HandshakeResult::Ignored,
         };
 
         // Verify inner signature
@@ -298,8 +294,6 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Key derivation failed: {}", e)),
         };
 
-        self.pending.insert(peer_stable_id.clone(), HandshakeState::Complete);
-
         println!("  [Handshake] Welcome processed from {}. Session established.", peer_stable_id);
 
         HandshakeResult::SessionEstablished {
@@ -318,7 +312,6 @@ impl HandshakeManager {
                 HandshakeState::AwaitingWelcome { initiated_at, .. } => {
                     initiated_at.elapsed().as_secs() < HANDSHAKE_TIMEOUT_SECS
                 }
-                HandshakeState::Complete => false, // Remove completed
             }
         });
     }
