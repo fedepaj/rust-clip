@@ -1,84 +1,111 @@
-use mdns_sd::{ServiceDaemon, ServiceInfo, ServiceEvent};
-use std::thread;
-use crate::core::identity::RingIdentity;
-use crate::transport::TransportType;
-use crate::mesh::topology::Topology;
+use anyhow::Result;
+use flume::Sender;
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::net::{IpAddr, SocketAddr};
+use std::thread;
 
+use crate::transport::{TransportEvent, TransportType};
+
+/// mDNS service for LAN peer discovery.
+///
+/// Advertises this node's rotating_id and discovers other nodes.
+/// Produces TransportEvents — does NOT interact with topology directly.
 pub struct MdnsService {
     daemon: ServiceDaemon,
     rotating_id: String,
-    topology: Topology,
     port: u16,
 }
 
+const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
+
 impl MdnsService {
-    pub fn new(identity: &RingIdentity, topology: Topology, port: u16) -> anyhow::Result<Self> {
+    pub fn new(rotating_id: String, port: u16) -> Result<Self> {
         let daemon = ServiceDaemon::new()?;
-        let rotating_id = identity.get_rotating_id();
-        Ok(Self { daemon, rotating_id, topology, port })
+        Ok(Self { daemon, rotating_id, port })
     }
 
-    pub fn start(&self) -> anyhow::Result<()> {
-        let service_type = "_rustclip._tcp.local.";
-        let instance_name = &self.rotating_id;
-        
-        let port = self.port;
-        let properties = [("version", "1.0")];
-
-        // Register
+    /// Start advertising and browsing.
+    /// Discovered peers are reported as `TransportEvent::PeerDiscovered`.
+    /// Lost peers are reported as `TransportEvent::PeerLost`.
+    pub fn start(&self, event_tx: Sender<TransportEvent>) -> Result<()> {
+        // Register our service
         let my_service = ServiceInfo::new(
-            service_type,
-            instance_name,
+            SERVICE_TYPE,
+            &self.rotating_id,
             "rust-clip-host.local.",
-            "", // IP (empty = all interfaces)
-            port,
-            &properties[..],
+            "",
+            self.port,
+            &[("version", "1.0")][..],
         )?.enable_addr_auto();
 
         self.daemon.register(my_service)?;
-        println!("📢 [LAN-mDNS] Service Registered: {}.{}", instance_name, service_type);
+        println!("  [mDNS] Registered: {}.{}", &self.rotating_id, SERVICE_TYPE);
 
-        // Browse
+        // Browse for peers
+        let my_rotating_id = self.rotating_id.clone();
         let browse_daemon = self.daemon.clone();
-        let service_type_clone = service_type.to_string();
-        let topology_scanner = self.topology.clone();
-        
-        thread::spawn(move || {
-            if let Ok(receiver) = browse_daemon.browse(&service_type_clone) {
-                while let Ok(event) = receiver.recv() {
-                    match event {
-                        ServiceEvent::ServiceResolved(info) => {
-                            let mut rotating_id = info.get_fullname().to_string();
-                            // Format is usually: Instance._type._tcp.local.
-                            // We just want Instance which is our rotating_id
-                            if let Some(idx) = rotating_id.find('.') {
-                                rotating_id = rotating_id[0..idx].to_string();
-                            }
 
-                            println!("🔎 [LAN-mDNS] Peer Discovered: {} ({:?}:{})", 
-                                rotating_id, 
-                                info.get_addresses(), 
-                                info.get_port()
-                            );
-                            
-                            // Extract first IPv4 address
-                            if let Some(ip) = info.get_addresses().iter().find(|addr| matches!(addr, IpAddr::V4(_))) {
-                                let addr = SocketAddr::new(*ip, info.get_port());
-                                topology_scanner.add_or_update(
-                                    rotating_id,
-                                    vec![], // Empty PubKey (Get from Handshake later)
-                                    None,   // No Session Key yet
-                                    Some((TransportType::Mdns, Some(addr)))
-                                );
-                            }
+        thread::spawn(move || {
+            let receiver = match browse_daemon.browse(SERVICE_TYPE) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("  [mDNS] Browse failed: {}", e);
+                    return;
+                }
+            };
+
+            while let Ok(event) = receiver.recv() {
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        let rotating_id = extract_instance_name(info.get_fullname());
+
+                        // Skip self
+                        if rotating_id == my_rotating_id {
+                            continue;
                         }
-                        _ => {}
+
+                        // Extract first IPv4 address
+                        let ipv4 = info.get_addresses().iter()
+                            .find(|addr| matches!(addr, IpAddr::V4(_)))
+                            .copied();
+
+                        if let Some(ip) = ipv4 {
+                            let addr = SocketAddr::new(ip, info.get_port());
+                            println!("  [mDNS] Peer discovered: {} at {}", &rotating_id, addr);
+                            let _ = event_tx.send(TransportEvent::PeerDiscovered {
+                                peer_id: rotating_id,
+                                transport: TransportType::Mdns,
+                                addr: Some(addr),
+                            });
+                        }
                     }
+
+                    ServiceEvent::ServiceRemoved(_, fullname) => {
+                        let rotating_id = extract_instance_name(&fullname);
+                        if rotating_id == my_rotating_id {
+                            continue;
+                        }
+                        println!("  [mDNS] Peer lost: {}", &rotating_id);
+                        let _ = event_tx.send(TransportEvent::PeerLost {
+                            peer_id: rotating_id,
+                            transport: TransportType::Mdns,
+                        });
+                    }
+
+                    _ => {}
                 }
             }
         });
 
         Ok(())
+    }
+}
+
+/// Extract the instance name (rotating_id) from a fully qualified service name.
+/// Format: "instance._type._tcp.local." → "instance"
+fn extract_instance_name(fullname: &str) -> String {
+    match fullname.find('.') {
+        Some(idx) => fullname[..idx].to_string(),
+        None => fullname.to_string(),
     }
 }

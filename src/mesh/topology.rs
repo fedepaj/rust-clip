@@ -120,10 +120,32 @@ impl Topology {
         self.peers.insert(rotating_id, entry);
     }
 
-    pub fn get_session_key(&self, rotating_id: &str) -> Option<ChaCha20Poly1305> {
-        self.peers.get(rotating_id).and_then(|p| p.session_key.clone())
+    pub fn get_session_key(&self, peer_id: &str) -> Option<ChaCha20Poly1305> {
+        self.peers.get(peer_id).and_then(|p| p.session_key.clone())
     }
-    
+
+    /// Check if a peer has an established session key.
+    pub fn has_session(&self, peer_id: &str) -> bool {
+        self.peers.get(peer_id).map_or(false, |p| p.session_key.is_some())
+    }
+
+    /// Mark a specific transport as inactive for a peer.
+    pub fn mark_transport_inactive(&self, peer_id: &str, transport: &TransportType) {
+        if let Some(mut entry) = self.peers.get_mut(peer_id) {
+            if let Some(status) = entry.transports.get_mut(transport) {
+                status.is_active = false;
+            }
+        }
+    }
+
+    /// Find a peer by rotating_id and return its StablePeerId (the key).
+    /// Used to correlate mDNS rotating_id entries with handshake-established StablePeerId entries.
+    pub fn find_by_rotating_id(&self, rotating_id: &str) -> Option<String> {
+        self.peers.iter()
+            .find(|entry| entry.value().rotating_id == rotating_id)
+            .map(|entry| entry.key().clone())
+    }
+
     pub fn list_peers(&self) -> Vec<String> {
         self.peers.iter().map(|kv| kv.key().clone()).collect()
     }

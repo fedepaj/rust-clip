@@ -57,39 +57,14 @@ fn run_node() -> anyhow::Result<()> {
 
     println!("  [Node] Identity loaded");
     println!("  [Node] StablePeerId: {}", identity.stable_peer_id());
-    println!("  [Node] Ed25519 PubKey: {}", hex::encode(identity.public_key.as_bytes()));
 
-    // 2. Create topology
-    let topology = Topology::new();
-
-    // 3. Create Swarm
-    let mut swarm = Swarm::new(identity.clone(), topology.clone());
-    let event_tx = swarm.event_sender();
-
-    // 4. BLE send channel (Swarm → BLE transport)
+    // 2. BLE send channel (Swarm → BLE transport)
     let (ble_send_tx, ble_send_rx) = flume::unbounded::<Vec<u8>>();
 
-    // 5. Start UDP + mDNS (LAN transport)
+    // 3. Start UDP transport
     let udp_transport = match UdpTransport::new() {
         Ok(udp) => {
-            let port = udp.get_port();
-            println!("  [Node] UDP bound to port {}", port);
-
-            // Start UDP listener → pushes TransportEvents
-            let udp_event_tx = event_tx.clone();
-            if let Err(e) = udp.start_with_events(udp_event_tx) {
-                println!("  [Node] UDP listener failed: {}", e);
-            }
-
-            // Start mDNS discovery
-            if let Ok(mdns) = MdnsService::new(&identity, topology.clone(), port) {
-                if let Err(e) = mdns.start() {
-                    println!("  [Node] mDNS failed: {}", e);
-                } else {
-                    println!("  [Node] mDNS started");
-                }
-            }
-
+            println!("  [Node] UDP bound to port {}", udp.get_port());
             Some(udp)
         }
         Err(e) => {
@@ -98,19 +73,47 @@ fn run_node() -> anyhow::Result<()> {
         }
     };
 
-    // 6. Start BLE + Swarm
-    // macOS: BLE needs the main thread RunLoop
-    // Windows: BLE runs in tokio async context
-    // The Swarm runs in a background thread
+    // 4. Create Swarm with transport handles
+    let topology = Topology::new();
+    let mut swarm = Swarm::new(
+        identity.clone(),
+        topology,
+        Some(ble_send_tx.clone()),
+        udp_transport.clone(),
+    );
+    let event_tx = swarm.event_sender();
+
+    // 5. Start UDP listener → pushes TransportEvents into Swarm
+    if let Some(ref udp) = udp_transport {
+        if let Err(e) = udp.start_with_events(event_tx.clone()) {
+            println!("  [Node] UDP listener failed: {}", e);
+        }
+    }
+
+    // 6. Start mDNS discovery → pushes PeerDiscovered/PeerLost into Swarm
+    if let Some(ref udp) = udp_transport {
+        let rotating_id = identity.get_rotating_id();
+        match MdnsService::new(rotating_id, udp.get_port()) {
+            Ok(mdns) => {
+                if let Err(e) = mdns.start(event_tx.clone()) {
+                    println!("  [Node] mDNS failed: {}", e);
+                } else {
+                    println!("  [Node] mDNS started");
+                }
+            }
+            Err(e) => println!("  [Node] mDNS init failed: {}", e),
+        }
+    }
+
+    // 7. Start BLE + Swarm
+    // macOS: BLE needs the main thread RunLoop, Swarm runs in background
+    // Windows: BLE runs in tokio, Swarm runs in background
 
     let ble_event_tx = event_tx.clone();
 
     // Spawn Swarm in background thread
-    let swarm_udp = udp_transport.clone();
-    let swarm_ble_tx = ble_send_tx.clone();
     std::thread::spawn(move || {
-        swarm.run(vec![], Some(swarm_ble_tx), swarm_udp)
-            .expect("Swarm crashed");
+        swarm.run().expect("Swarm crashed");
     });
 
     // Platform-specific BLE startup (blocks main thread on macOS)
@@ -130,7 +133,6 @@ fn run_node() -> anyhow::Result<()> {
             if let Err(e) = start_ble_service(ble_event_tx, ble_send_rx).await {
                 eprintln!("  [Node] Windows BLE error: {}", e);
             }
-            // Keep alive
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
             }
@@ -139,7 +141,6 @@ fn run_node() -> anyhow::Result<()> {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        // Linux: no BLE yet, just park
         println!("  [Node] BLE not supported on this platform. Running LAN only.");
         loop {
             std::thread::park();
