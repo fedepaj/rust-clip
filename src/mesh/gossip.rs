@@ -88,3 +88,97 @@ impl PacketCache {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── VectorClock tests ──────────────────────────────────────
+
+    #[test]
+    fn vector_clock_increment() {
+        let mut vc = VectorClock::new();
+        vc.increment("node-a".into());
+        vc.increment("node-a".into());
+        vc.increment("node-b".into());
+
+        assert_eq!(vc.clocks["node-a"], 2);
+        assert_eq!(vc.clocks["node-b"], 1);
+    }
+
+    #[test]
+    fn vector_clock_merge() {
+        let mut vc1 = VectorClock::new();
+        vc1.increment("a".into());
+        vc1.increment("a".into());
+
+        let mut vc2 = VectorClock::new();
+        vc2.increment("a".into());
+        vc2.increment("b".into());
+        vc2.increment("b".into());
+
+        vc1.merge(&vc2);
+        assert_eq!(vc1.clocks["a"], 2); // max(2,1)
+        assert_eq!(vc1.clocks["b"], 2); // max(0,2)
+    }
+
+    #[test]
+    fn vector_clock_ordering() {
+        let mut vc1 = VectorClock::new();
+        vc1.increment("a".into());
+
+        let mut vc2 = VectorClock::new();
+        vc2.increment("a".into());
+        vc2.increment("a".into());
+
+        // vc1 < vc2 (vc2 happened after vc1)
+        assert_eq!(vc1.partial_cmp(&vc2), Some(Ordering::Less));
+        assert_eq!(vc2.partial_cmp(&vc1), Some(Ordering::Greater));
+    }
+
+    #[test]
+    fn vector_clock_concurrent() {
+        let mut vc1 = VectorClock::new();
+        vc1.increment("a".into());
+
+        let mut vc2 = VectorClock::new();
+        vc2.increment("b".into());
+
+        // Concurrent: vc1 has a=1 but no b, vc2 has b=1 but no a
+        assert_eq!(vc1.partial_cmp(&vc2), None);
+    }
+
+    #[test]
+    fn vector_clock_equal() {
+        let mut vc1 = VectorClock::new();
+        vc1.increment("a".into());
+
+        let mut vc2 = VectorClock::new();
+        vc2.increment("a".into());
+
+        assert_eq!(vc1.partial_cmp(&vc2), Some(Ordering::Equal));
+    }
+
+    // ─── PacketCache tests ──────────────────────────────────────
+
+    #[test]
+    fn packet_cache_dedup() {
+        let mut cache = PacketCache::new(10);
+        assert!(!cache.seen(b"packet-1"));
+        assert!(cache.seen(b"packet-1")); // seen again
+        assert!(!cache.seen(b"packet-2"));
+    }
+
+    #[test]
+    fn packet_cache_eviction() {
+        let mut cache = PacketCache::new(3);
+        cache.seen(b"a");
+        cache.seen(b"b");
+        cache.seen(b"c");
+
+        // Cache full. "a" should be evicted after next insert.
+        cache.seen(b"d");
+        assert!(!cache.seen(b"a")); // "a" was evicted, not seen anymore
+        assert!(cache.seen(b"d")); // "d" is still in cache
+    }
+}

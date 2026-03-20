@@ -1,10 +1,12 @@
 use anyhow::Result;
 use flume::Sender;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::thread;
 
 use crate::transport::{TransportEvent, TransportType};
+
+const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
 
 /// mDNS service for LAN peer discovery.
 ///
@@ -16,19 +18,20 @@ pub struct MdnsService {
     port: u16,
 }
 
-const SERVICE_TYPE: &str = "_rustclip._tcp.local.";
-
 impl MdnsService {
     pub fn new(rotating_id: String, port: u16) -> Result<Self> {
         let daemon = ServiceDaemon::new()?;
-        Ok(Self { daemon, rotating_id, port })
+        Ok(Self {
+            daemon,
+            rotating_id,
+            port,
+        })
     }
 
     /// Start advertising and browsing.
-    /// Discovered peers are reported as `TransportEvent::PeerDiscovered`.
-    /// Lost peers are reported as `TransportEvent::PeerLost`.
+    /// Discovered peers → `TransportEvent::PeerDiscovered`.
+    /// Lost peers → `TransportEvent::PeerLost`.
     pub fn start(&self, event_tx: Sender<TransportEvent>) -> Result<()> {
-        // Register our service
         let my_service = ServiceInfo::new(
             SERVICE_TYPE,
             &self.rotating_id,
@@ -36,12 +39,15 @@ impl MdnsService {
             "",
             self.port,
             &[("version", "1.0")][..],
-        )?.enable_addr_auto();
+        )?
+        .enable_addr_auto();
 
         self.daemon.register(my_service)?;
-        println!("  [mDNS] Registered: {}.{}", &self.rotating_id, SERVICE_TYPE);
+        println!(
+            "  [mDNS] Registered: {}.{}",
+            &self.rotating_id, SERVICE_TYPE
+        );
 
-        // Browse for peers
         let my_rotating_id = self.rotating_id.clone();
         let browse_daemon = self.daemon.clone();
 
@@ -59,23 +65,23 @@ impl MdnsService {
                     ServiceEvent::ServiceResolved(info) => {
                         let rotating_id = extract_instance_name(info.get_fullname());
 
-                        // Skip self
                         if rotating_id == my_rotating_id {
                             continue;
                         }
 
-                        // Extract first IPv4 address
-                        let ipv4 = info.get_addresses().iter()
+                        let ipv4 = info
+                            .get_addresses()
+                            .iter()
                             .find(|addr| matches!(addr, IpAddr::V4(_)))
                             .copied();
 
                         if let Some(ip) = ipv4 {
-                            let addr = SocketAddr::new(ip, info.get_port());
-                            println!("  [mDNS] Peer discovered: {} at {}", &rotating_id, addr);
+                            let addr = format!("{}:{}", ip, info.get_port());
+                            println!("  [mDNS] Peer discovered: {} at {}", &rotating_id, &addr);
                             let _ = event_tx.send(TransportEvent::PeerDiscovered {
                                 peer_id: rotating_id,
                                 transport: TransportType::Mdns,
-                                addr: Some(addr),
+                                handle: addr,
                             });
                         }
                     }

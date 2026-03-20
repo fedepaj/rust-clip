@@ -9,7 +9,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 use zeroize::Zeroize;
 
 use crate::core::identity::RingIdentity;
-use crate::core::packet::{WirePacket, PacketType, HandshakePayload};
+use crate::core::packet::{WirePacket, PacketType, HandshakePayload, TIMESTAMP_WINDOW_SECS};
 
 
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
@@ -78,6 +78,10 @@ impl HandshakeManager {
         sign_data.extend_from_slice(&timestamp.to_le_bytes());
         let inner_sig = identity.sign(&sign_data);
 
+        // Ring proof: HMAC(root_secret, "ring-membership" || our_peer_id)
+        // The responder can verify this with their own root_secret.
+        let ring_proof = identity.ring_proof_for(identity.stable_peer_id());
+
         let hello = HandshakePayload::Hello {
             stable_peer_id: identity.stable_peer_id().to_string(),
             ed25519_pubkey: identity.public_key.as_bytes().to_vec(),
@@ -85,6 +89,7 @@ impl HandshakeManager {
             timestamp,
             signature: inner_sig.to_bytes().to_vec(),
             rotating_id: identity.get_rotating_id(),
+            ring_proof,
         };
 
         let payload_bytes = bincode::serialize(&hello)?;
@@ -122,9 +127,9 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Deserialize Hello failed: {}", e)),
         };
 
-        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes, peer_rotating_id) = match hello {
-            HandshakePayload::Hello { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id } => {
-                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id)
+        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes, peer_rotating_id, peer_ring_proof) = match hello {
+            HandshakePayload::Hello { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id, ring_proof } => {
+                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id, ring_proof)
             }
             _ => return HandshakeResult::Failed("Expected Hello payload".to_string()),
         };
@@ -142,8 +147,15 @@ impl HandshakeManager {
                 return HandshakeResult::Ignored;
             }
             // I have the smaller ID → I'm the responder → process Hello, abandon my pending
+            // Targeted removal: try peer's StablePeerId, rotating_id, then "broadcast" fallback
             println!("  [Handshake] Simultaneous Hello from {}. Tie-break: I'm responder.", &peer_stable_id[..8]);
-            self.pending.clear(); // Drop all pending (we're switching to responder role)
+            self.remove_pending_for_peer(&peer_stable_id, &peer_rotating_id);
+        }
+
+        // Validate Hello timestamp (anti-replay)
+        let now = chrono::Utc::now().timestamp() as u64;
+        if timestamp > now + TIMESTAMP_WINDOW_SECS || now > timestamp + TIMESTAMP_WINDOW_SECS {
+            return HandshakeResult::Failed("Hello timestamp out of window".to_string());
         }
 
         // Verify inner signature
@@ -172,6 +184,16 @@ impl HandshakeManager {
         let expected_id = RingIdentity::compute_stable_peer_id(&peer_vk);
         if expected_id != peer_stable_id {
             return HandshakeResult::Failed("StablePeerId mismatch".to_string());
+        }
+
+        // Ring membership check: verify peer shares the same mnemonic.
+        // Currently logged but not enforced — will be enforced when
+        // multi-device ring support is implemented (per-device keypairs + shared ring secret).
+        if !peer_ring_proof.is_empty() && !identity.verify_ring_proof(&peer_stable_id, &peer_ring_proof) {
+            println!(
+                "  [Handshake] Ring proof mismatch for {} (cross-ring peer)",
+                &peer_stable_id[..8]
+            );
         }
 
         // Generate our ephemeral keys and derive session key
@@ -205,6 +227,7 @@ impl HandshakeManager {
             timestamp: our_timestamp,
             signature: our_inner_sig.to_bytes().to_vec(),
             rotating_id: identity.get_rotating_id(),
+            ring_proof: identity.ring_proof_for(identity.stable_peer_id()),
         };
 
         let payload_bytes = match bincode::serialize(&welcome) {
@@ -245,9 +268,9 @@ impl HandshakeManager {
             Err(e) => return HandshakeResult::Failed(format!("Deserialize Welcome failed: {}", e)),
         };
 
-        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes, peer_rotating_id) = match welcome {
-            HandshakePayload::Welcome { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id } => {
-                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id)
+        let (peer_stable_id, peer_pubkey_bytes, peer_eph_bytes, timestamp, inner_sig_bytes, peer_rotating_id, peer_ring_proof) = match welcome {
+            HandshakePayload::Welcome { stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id, ring_proof } => {
+                (stable_peer_id, ed25519_pubkey, ephemeral_pubkey, timestamp, signature, rotating_id, ring_proof)
             }
             _ => return HandshakeResult::Failed("Expected Welcome payload".to_string()),
         };
@@ -269,6 +292,12 @@ impl HandshakeManager {
 
         if pending.initiated_at.elapsed().as_secs() > HANDSHAKE_TIMEOUT_SECS {
             return HandshakeResult::Failed("Handshake timed out".to_string());
+        }
+
+        // Validate Welcome timestamp (anti-replay)
+        let now = chrono::Utc::now().timestamp() as u64;
+        if timestamp > now + TIMESTAMP_WINDOW_SECS || now > timestamp + TIMESTAMP_WINDOW_SECS {
+            return HandshakeResult::Failed("Welcome timestamp out of window".to_string());
         }
 
         // Verify inner signature
@@ -296,6 +325,14 @@ impl HandshakeManager {
         let expected_id = RingIdentity::compute_stable_peer_id(&peer_vk);
         if expected_id != peer_stable_id {
             return HandshakeResult::Failed("Welcome StablePeerId mismatch".to_string());
+        }
+
+        // Ring membership check (logged, not enforced yet — see process_hello comment)
+        if !peer_ring_proof.is_empty() && !identity.verify_ring_proof(&peer_stable_id, &peer_ring_proof) {
+            println!(
+                "  [Handshake] Welcome ring proof mismatch for {} (cross-ring peer)",
+                &peer_stable_id[..8]
+            );
         }
 
         // Derive session key (ephemeral_secret is consumed → forward secrecy)
@@ -336,6 +373,19 @@ impl HandshakeManager {
     pub fn has_any_pending(&self) -> bool {
         !self.pending.is_empty()
     }
+
+    /// Remove the pending handshake associated with a specific peer.
+    /// Tries StablePeerId first, then rotating_id, then "broadcast" fallback.
+    /// Only removes one entry (the first match).
+    fn remove_pending_for_peer(&mut self, stable_id: &str, rotating_id: &str) {
+        if self.pending.remove(stable_id).is_some() {
+            return;
+        }
+        if self.pending.remove(rotating_id).is_some() {
+            return;
+        }
+        self.pending.remove("broadcast");
+    }
 }
 
 /// Derive a ChaCha20Poly1305 session key from a DH shared secret.
@@ -345,7 +395,7 @@ fn derive_session_key(
     my_id: &str,
     peer_id: &str,
 ) -> Result<ChaCha20Poly1305> {
-    let info = if my_id < peer_id {
+    let mut info = if my_id < peer_id {
         format!("{}:{}", my_id, peer_id)
     } else {
         format!("{}:{}", peer_id, my_id)
@@ -357,6 +407,112 @@ fn derive_session_key(
         .map_err(|_| anyhow!("HKDF expansion failed"))?;
 
     let key = ChaCha20Poly1305::new(&key_bytes.into());
+
+    // Zeroize sensitive material
     key_bytes.zeroize();
+    info.zeroize();
+
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initiate_creates_pending() {
+        let identity = RingIdentity::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ).unwrap();
+        let mut mgr = HandshakeManager::new();
+
+        assert!(!mgr.has_any_pending());
+        let _hello = mgr.initiate(&identity, "test-key").unwrap();
+        assert!(mgr.has_pending("test-key"));
+        assert!(mgr.has_any_pending());
+    }
+
+    #[test]
+    fn cleanup_stale_removes_old() {
+        let identity = RingIdentity::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ).unwrap();
+        let mut mgr = HandshakeManager::new();
+
+        mgr.initiate(&identity, "key-1").unwrap();
+        assert!(mgr.has_pending("key-1"));
+
+        // Fresh handshakes should survive cleanup
+        mgr.cleanup_stale();
+        assert!(mgr.has_pending("key-1"));
+    }
+
+    #[test]
+    fn remove_pending_for_peer_tries_fallback() {
+        let identity = RingIdentity::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ).unwrap();
+        let mut mgr = HandshakeManager::new();
+
+        // Create a pending with "broadcast" key (BLE pattern)
+        mgr.initiate(&identity, "broadcast").unwrap();
+        assert!(mgr.has_pending("broadcast"));
+
+        // Targeted removal: stable_id and rotating_id don't match,
+        // should fall back to "broadcast"
+        mgr.remove_pending_for_peer("unknown-stable", "unknown-rotating");
+        assert!(!mgr.has_pending("broadcast"));
+    }
+
+    #[test]
+    fn remove_pending_prefers_stable_id() {
+        let identity = RingIdentity::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ).unwrap();
+        let mut mgr = HandshakeManager::new();
+
+        mgr.initiate(&identity, "stable-id-abc").unwrap();
+        mgr.initiate(&identity, "broadcast").unwrap();
+
+        // Should remove by stable_id, leaving "broadcast" intact
+        mgr.remove_pending_for_peer("stable-id-abc", "some-rotating");
+        assert!(!mgr.has_pending("stable-id-abc"));
+        assert!(mgr.has_pending("broadcast"));
+    }
+
+    #[test]
+    fn hello_welcome_roundtrip() {
+        let id_a = RingIdentity::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ).unwrap();
+        let id_b = RingIdentity::from_mnemonic(
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"
+        ).unwrap();
+
+        let mut mgr_a = HandshakeManager::new();
+        let mut mgr_b = HandshakeManager::new();
+
+        // A initiates
+        let hello_packet = mgr_a.initiate(&id_a, "broadcast").unwrap();
+
+        // B processes Hello → gets SessionEstablished + Welcome reply
+        let result_b = mgr_b.process_hello(&id_b, &hello_packet);
+        let welcome_packet = match result_b {
+            HandshakeResult::SessionEstablished { reply_packet, peer_id, .. } => {
+                assert_eq!(peer_id, id_a.stable_peer_id());
+                reply_packet.expect("Responder should have reply packet")
+            }
+            other => panic!("Expected SessionEstablished, got {:?}", std::mem::discriminant(&other)),
+        };
+
+        // A processes Welcome → gets SessionEstablished
+        let result_a = mgr_a.process_welcome(&id_a, &welcome_packet);
+        match result_a {
+            HandshakeResult::SessionEstablished { peer_id, reply_packet, .. } => {
+                assert_eq!(peer_id, id_b.stable_peer_id());
+                assert!(reply_packet.is_none()); // Initiator has no reply
+            }
+            other => panic!("Expected SessionEstablished, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
 }

@@ -21,7 +21,6 @@ fn default_language() -> String {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        // Fix: Logica semplificata per ottenere il nome host
         let name = hostname::get()
             .ok()
             .map(|s| s.to_string_lossy().to_string())
@@ -39,7 +38,7 @@ impl Default for AppConfig {
 impl AppConfig {
     fn get_path() -> Result<PathBuf> {
         let proj = ProjectDirs::from("com", "rustclip", "rust-clip")
-            .ok_or_else(|| anyhow::anyhow!("Impossibile determinare cartella config"))?;
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
         
         let config_dir = proj.config_dir();
         if !config_dir.exists() {
@@ -51,7 +50,7 @@ impl AppConfig {
 
     pub fn load() -> Self {
         if let Ok(path) = Self::get_path() {
-            println!("📂 Config Path: {:?}", path);
+            println!("  [Config] Path: {:?}", path);
             if let Ok(content) = fs::read_to_string(path) {
                 if let Ok(cfg) = serde_json::from_str(&content) {
                     return cfg;

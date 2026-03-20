@@ -2,7 +2,9 @@ use anyhow::Result;
 use crate::transport::{TransportEvent, TransportType};
 use crate::transport::ble::fragmentation::{self, Reassembler};
 use flume::Sender;
+use std::collections::HashMap;
 use std::sync::{OnceLock, Mutex};
+use std::cell::{RefCell, Cell};
 
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, rc::Retained, MainThreadOnly, sel, Message};
@@ -18,24 +20,45 @@ use objc2_core_bluetooth::{
     CBCharacteristicWriteType,
 };
 
-use std::cell::RefCell;
-
 const SERVICE_UUID_STR: &str = "99999999-0000-0000-0000-000000000001";
 const READ_CHAR_UUID: &str = "99999999-0000-0000-0000-000000000002";
 const WRITE_CHAR_UUID: &str = "99999999-0000-0000-0000-000000000003";
 
 // Channels for communication between BLE RunLoop and Swarm
-// EVENT_TX: BLE → Swarm (TransportEvents: received data, link established)
-// SEND_RX: Swarm → BLE (raw bytes to send to connected peer)
+// EVENT_TX: BLE → Swarm (TransportEvents)
+// SEND_RX: Swarm → BLE (tagged: handle + data)
 static EVENT_TX: OnceLock<Sender<TransportEvent>> = OnceLock::new();
-static SEND_RX: OnceLock<flume::Receiver<Vec<u8>>> = OnceLock::new();
+static SEND_RX: OnceLock<flume::Receiver<(String, Vec<u8>)>> = OnceLock::new();
 static REASSEMBLER: OnceLock<Mutex<Reassembler>> = OnceLock::new();
 
 thread_local! {
-    static CONNECTED_PERIPHERAL: RefCell<Option<Retained<CBPeripheral>>> = RefCell::new(None);
-    static WRITE_CHARACTERISTIC: RefCell<Option<Retained<CBCharacteristic>>> = RefCell::new(None);
-    // Track the peer's identity UUID (read from IDENTITY characteristic)
-    static PEER_ID: RefCell<Option<String>> = RefCell::new(None);
+    /// Connected peers with write characteristic ready.
+    /// handle ("ble-0", "ble-1", ...) → (peripheral, write_characteristic)
+    static BLE_PEERS: RefCell<HashMap<String, (Retained<CBPeripheral>, Retained<CBCharacteristic>)>> = RefCell::new(HashMap::new());
+
+    /// All known peripheral pointers → handle.
+    /// Empty string means "connecting, write char not yet found".
+    static PERIPHERAL_MAP: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
+
+    /// Counter for generating unique handles.
+    static NEXT_HANDLE_ID: Cell<u32> = Cell::new(0);
+}
+
+/// Get a stable key for a CBPeripheral reference (raw pointer as usize).
+fn peripheral_key(peripheral: &CBPeripheral) -> usize {
+    peripheral as *const CBPeripheral as usize
+}
+
+/// Write bytes to a peripheral's characteristic.
+fn write_to_peripheral(peripheral: &CBPeripheral, write_char: &CBCharacteristic, bytes: &[u8]) {
+    unsafe {
+        let data = objc2_foundation::NSData::with_bytes(bytes);
+        peripheral.writeValue_forCharacteristic_type(
+            &data,
+            write_char,
+            CBCharacteristicWriteType::WithResponse,
+        );
+    }
 }
 
 define_class!(
@@ -44,22 +67,25 @@ define_class!(
     #[name = "BleDelegate"]
     struct BleDelegate;
 
-    // --- TIMER TICK (Outbound Loop: drain send queue) ---
+    // --- TIMER TICK (Outbound Loop: drain tagged send queue) ---
     impl BleDelegate {
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: &NSTimer) {
             if let Some(rx) = SEND_RX.get() {
-                while let Ok(data) = rx.try_recv() {
+                while let Ok((handle, data)) = rx.try_recv() {
                     let packet_id = fragmentation::next_packet_id();
                     let fragments = fragmentation::fragment(&data, packet_id);
-                    let frag_count = fragments.len();
-                    if frag_count > 1 {
-                        println!("  [BLE-Mac] Sending {} bytes in {} fragments", data.len(), frag_count);
-                    } else {
-                        println!("  [BLE-Mac] Sending {} bytes", data.len());
+                    if fragments.len() > 1 {
+                        println!("  [BLE-Mac] Sending {} bytes in {} fragments (→ {})", data.len(), fragments.len(), handle);
                     }
-                    for frag in &fragments {
-                        self.send_raw_bytes(frag);
+                    if handle == "*" {
+                        for frag in &fragments {
+                            self.send_to_all(frag);
+                        }
+                    } else {
+                        for frag in &fragments {
+                            self.send_to_handle(&handle, frag);
+                        }
                     }
                 }
             }
@@ -111,7 +137,7 @@ define_class!(
                                 let _ = tx.send(TransportEvent::PacketReceived {
                                     data,
                                     from_transport: TransportType::Ble,
-                                    from_addr: None,
+                                    from_handle: "ble".to_string(),
                                 });
                             }
                         }
@@ -124,7 +150,7 @@ define_class!(
         }
     }
 
-    // --- CENTRAL MANAGER (Client: scan + connect) ---
+    // --- CENTRAL MANAGER (Client: scan + connect to multiple peers) ---
     unsafe impl CBCentralManagerDelegate for BleDelegate {
         #[unsafe(method(centralManagerDidUpdateState:))]
         fn central_manager_did_update_state(&self, central: &CBCentralManager) {
@@ -137,27 +163,70 @@ define_class!(
 
         #[unsafe(method(centralManager:didDiscoverPeripheral:advertisementData:RSSI:))]
         fn central_manager_did_discover_peripheral(&self, central: &CBCentralManager, peripheral: &CBPeripheral, _adv_data: &NSDictionary<NSString, AnyObject>, _rssi: &AnyObject) {
-            unsafe {
-                // Don't use device name — not modifiable on macOS
-                println!("  [BLE-Mac] Peer discovered. Connecting...");
-                central.stopScan();
-                central.connectPeripheral_options(peripheral, None);
+            let key = peripheral_key(peripheral);
 
-                CONNECTED_PERIPHERAL.with(|p| {
-                    *p.borrow_mut() = Some(peripheral.retain());
-                });
+            // Dedup: skip if we already know this peripheral
+            let already_known = PERIPHERAL_MAP.with(|m| m.borrow().contains_key(&key));
+            if already_known {
+                return;
+            }
+
+            // Mark as connecting (empty handle = not ready yet)
+            PERIPHERAL_MAP.with(|m| {
+                m.borrow_mut().insert(key, String::new());
+            });
+
+            unsafe {
+                println!("  [BLE-Mac] Peer discovered. Connecting...");
+                // Do NOT stop scanning — keep discovering more peers
+                central.connectPeripheral_options(peripheral, None);
             }
         }
 
         #[unsafe(method(centralManager:didConnectPeripheral:))]
         fn central_manager_did_connect_peripheral(&self, _central: &CBCentralManager, peripheral: &CBPeripheral) {
             unsafe {
-                println!("  [BLE-Mac] Connected. Discovering services...");
+                println!("  [BLE-Mac] Connected to peer. Discovering services...");
                 peripheral.setDelegate(Some(ProtocolObject::from_ref(self)));
 
                 let uuid = CBUUID::UUIDWithString(&NSString::from_str(SERVICE_UUID_STR));
                 let uuids = NSArray::from_slice(&[&*uuid]);
                 peripheral.discoverServices(Some(&uuids));
+            }
+        }
+
+        #[unsafe(method(centralManager:didFailToConnectPeripheral:error:))]
+        fn central_manager_did_fail_to_connect(&self, _central: &CBCentralManager, peripheral: &CBPeripheral, error: Option<&NSError>) {
+            let key = peripheral_key(peripheral);
+            PERIPHERAL_MAP.with(|m| { m.borrow_mut().remove(&key); });
+            if let Some(err) = error {
+                println!("  [BLE-Mac] Connection failed: {}", err.localizedDescription());
+            }
+        }
+
+        #[unsafe(method(centralManager:didDisconnectPeripheral:error:))]
+        fn central_manager_did_disconnect_peripheral(&self, central: &CBCentralManager, peripheral: &CBPeripheral, _error: Option<&NSError>) {
+            let key = peripheral_key(peripheral);
+            let handle = PERIPHERAL_MAP.with(|m| m.borrow_mut().remove(&key));
+
+            if let Some(handle) = handle {
+                if !handle.is_empty() {
+                    BLE_PEERS.with(|p| { p.borrow_mut().remove(&handle); });
+                    println!("  [BLE-Mac] Peer {} disconnected.", handle);
+
+                    if let Some(tx) = EVENT_TX.get() {
+                        let _ = tx.send(TransportEvent::PeerLost {
+                            peer_id: handle,
+                            transport: TransportType::Ble,
+                        });
+                    }
+                }
+            }
+
+            // Restart scanning to rediscover disconnected peripherals
+            unsafe {
+                central.stopScan();
+                self.start_scanning(central);
             }
         }
     }
@@ -171,7 +240,6 @@ define_class!(
                 if let Some(services) = peripheral.services() {
                     for i in 0..services.count() {
                         let service = services.objectAtIndex(i);
-                        println!("  [BLE-Mac] Service found. Discovering characteristics...");
                         peripheral.discoverCharacteristics_forService(None, &service);
                     }
                 }
@@ -179,7 +247,7 @@ define_class!(
         }
 
         #[unsafe(method(peripheral:didDiscoverCharacteristicsForService:error:))]
-        fn peripheral_did_discover_chars(&self, _peripheral: &CBPeripheral, service: &CBService, error: Option<&NSError>) {
+        fn peripheral_did_discover_chars(&self, peripheral: &CBPeripheral, service: &CBService, error: Option<&NSError>) {
             if error.is_some() { return; }
             unsafe {
                 if let Some(chars) = service.characteristics() {
@@ -188,18 +256,33 @@ define_class!(
                         let uuid = ch.UUID().UUIDString();
 
                         if uuid.isEqualToString(&NSString::from_str(WRITE_CHAR_UUID)) {
-                            println!("  [BLE-Mac] Write characteristic found. Link ready.");
-                            WRITE_CHARACTERISTIC.with(|c| {
-                                *c.borrow_mut() = Some(ch.retain());
+                            // Assign a unique handle
+                            let handle = NEXT_HANDLE_ID.with(|id| {
+                                let n = id.get();
+                                id.set(n + 1);
+                                format!("ble-{}", n)
                             });
 
-                            // Signal LinkEstablished to Swarm
-                            // We don't know the remote peer_id yet (will learn during handshake)
-                            // Use a placeholder — the Swarm will initiate handshake
+                            let key = peripheral_key(peripheral);
+
+                            // Update peripheral map with the assigned handle
+                            PERIPHERAL_MAP.with(|m| {
+                                m.borrow_mut().insert(key, handle.clone());
+                            });
+
+                            // Store in connected peers
+                            BLE_PEERS.with(|p| {
+                                p.borrow_mut().insert(handle.clone(), (peripheral.retain(), ch.retain()));
+                            });
+
+                            println!("  [BLE-Mac] Write char found → {}. Link ready.", handle);
+
+                            // Signal peer discovered to Swarm
                             if let Some(tx) = EVENT_TX.get() {
-                                let _ = tx.send(TransportEvent::LinkEstablished {
-                                    peer_id: "unknown-ble-peer".to_string(),
+                                let _ = tx.send(TransportEvent::PeerDiscovered {
+                                    peer_id: handle.clone(),
                                     transport: TransportType::Ble,
+                                    handle,
                                 });
                             }
                         }
@@ -216,7 +299,7 @@ impl BleDelegate {
     pub fn init_delegate(
         mtm: MainThreadMarker,
         event_tx: Sender<TransportEvent>,
-        send_rx: flume::Receiver<Vec<u8>>,
+        send_rx: flume::Receiver<(String, Vec<u8>)>,
     ) -> Retained<Self> {
         let _ = EVENT_TX.set(event_tx);
         let _ = SEND_RX.set(send_rx);
@@ -266,7 +349,6 @@ impl BleDelegate {
 
     fn start_advertising(&self, manager: &CBPeripheralManager) {
         unsafe {
-            // Only advertise service UUID — do NOT use device name (not modifiable on macOS)
             let uuid_obj = CBUUID::UUIDWithString(&NSString::from_str(SERVICE_UUID_STR));
             let val_uuids = NSArray::from_slice(&[&*uuid_obj]);
             let keys: [&NSString; 1] = [CBAdvertisementDataServiceUUIDsKey];
@@ -285,21 +367,27 @@ impl BleDelegate {
         }
     }
 
-    fn send_raw_bytes(&self, bytes: &[u8]) {
-        CONNECTED_PERIPHERAL.with(|p| {
-            if let Some(peer) = p.borrow().as_ref() {
-                WRITE_CHARACTERISTIC.with(|c| {
-                    if let Some(ch) = c.borrow().as_ref() {
-                        unsafe {
-                            let data = objc2_foundation::NSData::with_bytes(bytes);
-                            peer.writeValue_forCharacteristic_type(
-                                &data,
-                                ch,
-                                CBCharacteristicWriteType::WithResponse,
-                            );
-                        }
-                    }
-                });
+    /// Send raw bytes to a specific peer by handle.
+    /// Falls back to broadcast if handle not found (e.g., "ble" from server-side).
+    fn send_to_handle(&self, handle: &str, bytes: &[u8]) {
+        BLE_PEERS.with(|p| {
+            let peers = p.borrow();
+            if let Some((peripheral, write_char)) = peers.get(handle) {
+                write_to_peripheral(peripheral, write_char, bytes);
+            } else {
+                // Handle not found — broadcast to all connected peers
+                for (peripheral, write_char) in peers.values() {
+                    write_to_peripheral(peripheral, write_char, bytes);
+                }
+            }
+        });
+    }
+
+    /// Broadcast raw bytes to all connected peers.
+    fn send_to_all(&self, bytes: &[u8]) {
+        BLE_PEERS.with(|p| {
+            for (peripheral, write_char) in p.borrow().values() {
+                write_to_peripheral(peripheral, write_char, bytes);
             }
         });
     }
@@ -309,7 +397,7 @@ impl BleDelegate {
 /// This function blocks forever (RunLoop).
 pub fn run_ble_runloop(
     event_tx: Sender<TransportEvent>,
-    send_rx: flume::Receiver<Vec<u8>>,
+    send_rx: flume::Receiver<(String, Vec<u8>)>,
 ) -> Result<()> {
     let mtm = MainThreadMarker::new().expect("Must run on Main Thread for macOS BLE");
     unsafe {

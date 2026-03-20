@@ -73,3 +73,58 @@ impl ClipboardSync {
         hasher.finalize().into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn propagate_new_content() {
+        let mut sync = ClipboardSync::new();
+        assert!(sync.should_propagate(b"hello", "me"));
+    }
+
+    #[test]
+    fn skip_duplicate_content() {
+        let mut sync = ClipboardSync::new();
+        assert!(sync.should_propagate(b"hello", "me"));
+        assert!(!sync.should_propagate(b"hello", "me")); // same content
+    }
+
+    #[test]
+    fn propagate_different_content() {
+        let mut sync = ClipboardSync::new();
+        assert!(sync.should_propagate(b"hello", "me"));
+        assert!(sync.should_propagate(b"world", "me"));
+    }
+
+    #[test]
+    fn apply_remote_ignores_own_updates() {
+        let mut sync = ClipboardSync::new();
+        assert!(!sync.apply_remote(b"hello", "me", "me")); // own update
+    }
+
+    #[test]
+    fn apply_remote_accepts_new() {
+        let mut sync = ClipboardSync::new();
+        assert!(sync.apply_remote(b"hello", "peer-a", "me"));
+    }
+
+    #[test]
+    fn apply_remote_skips_duplicate() {
+        let mut sync = ClipboardSync::new();
+        assert!(sync.apply_remote(b"hello", "peer-a", "me"));
+        assert!(!sync.apply_remote(b"hello", "peer-b", "me")); // same content from different peer
+    }
+
+    #[test]
+    fn cooldown_after_remote_apply() {
+        let mut sync = ClipboardSync::new();
+        sync.apply_remote(b"remote-text", "peer-a", "me");
+
+        // Immediately after applying remote, local propagation should be blocked
+        assert!(!sync.should_propagate(b"remote-text", "me")); // also blocked by hash
+        // Different content during cooldown:
+        assert!(!sync.should_propagate(b"different", "me")); // blocked by cooldown
+    }
+}
